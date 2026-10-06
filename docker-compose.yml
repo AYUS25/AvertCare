@@ -1,0 +1,80 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────
+# AvertCare · Multi-Container Orchestration
+# Services: backend · frontend · qdrant · redis
+# ─────────────────────────────────────────────────────────────
+
+services:
+
+  # ── FastAPI Inference & API Gateway ─────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: avertcare-backend
+    ports:
+      - "8000:8000"
+    env_file: ./backend/.env
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - qdrant
+      - redis
+    volumes:
+      - ./ml_engine/models:/app/models:ro   # mount trained .pkl artefacts (read-only)
+    networks:
+      - avertcare-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Next.js Clinical Dashboard ───────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: avertcare-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    networks:
+      - avertcare-net
+    restart: unless-stopped
+
+  # ── Qdrant Vector DB (RAG Engine) ───────────────────────────
+  qdrant:
+    image: qdrant/qdrant:v1.8.4
+    container_name: avertcare-qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - avertcare-net
+    restart: unless-stopped
+
+  # ── Redis (Caching + Rate Limiting) ─────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: avertcare-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - avertcare-net
+    restart: unless-stopped
+
+# ─────────────────────────────────────────────────────────────
+volumes:
+  qdrant_data:
+
+networks:
+  avertcare-net:
+    driver: bridge

@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Env / Secrets
+.env
+*.pem
+*.key
+
+# ML artefacts (mounted via Docker volume — not tracked)
+ml_engine/models/*.pkl
+ml_engine/models/*.pt
+
+# Docker
+.dockerignore
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
