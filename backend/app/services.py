@@ -139,13 +139,12 @@ def _live_rag_retrieval(payload: PatientEncounter) -> TwinPatientResponse:
         normalize_embeddings=True,
     ).tolist()
 
-    response = client.query_points(
+    results = client.search(
         collection_name=settings.RAG_COLLECTION,
-        query=query_vector,
+        query_vector=query_vector,
         limit=settings.RAG_TOP_K + 1,
         with_payload=True,
     )
-    results = response.points
 
     # Drop any near-exact self-match
     results = [r for r in results if r.score < 0.9999][: settings.RAG_TOP_K]

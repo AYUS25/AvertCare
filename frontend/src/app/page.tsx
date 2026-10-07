@@ -12,8 +12,10 @@ import {
   Users,
   ShieldAlert,
   Loader2,
-  DollarSign
+  DollarSign,
+  LogOut
 } from "lucide-react";
+import { useAuth } from "@/contexts/AuthContext";
 
 // Types matching our Backend Pydantic Schemas
 type PatientEncounter = {
@@ -76,21 +78,27 @@ export default function Dashboard() {
   const [ragData, setRagData] = useState<TwinPatientResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const { token, logout, user } = useAuth();
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
   const handleAnalyze = async () => {
     setIsAnalyzing(true);
     setError(null);
     try {
+      const headers = { 
+        "Content-Type": "application/json",
+        ...(token && { "Authorization": `Bearer ${token}` })
+      };
+
       const [predictRes, ragRes] = await Promise.all([
         fetch(`${API_URL}/api/predict`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify(patient),
         }),
         fetch(`${API_URL}/api/twin-patients`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify(patient),
         }),
       ]);
@@ -118,8 +126,19 @@ export default function Dashboard() {
             <p className="text-sm text-[hsl(var(--muted-foreground))]">Prescriptive Clinical Decision Support</p>
           </div>
         </div>
-        <div className="px-4 py-2 text-sm font-medium border rounded-full border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]">
-          FHIR Sync: <span className="text-emerald-400">Connected</span>
+        <div className="flex items-center gap-4">
+          <div className="px-4 py-2 text-sm font-medium border rounded-full border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]">
+            FHIR Sync: <span className="text-emerald-400">Connected</span>
+          </div>
+          {user && (
+            <button 
+              onClick={logout}
+              className="p-2 text-[hsl(var(--muted-foreground))] hover:text-rose-400 hover:bg-rose-400/10 rounded-lg transition-colors flex items-center gap-2"
+              title="Sign Out"
+            >
+              <LogOut className="w-5 h-5" />
+            </button>
+          )}
         </div>
       </header>
 

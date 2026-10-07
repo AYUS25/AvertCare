@@ -18,6 +18,9 @@ export const metadata: Metadata = {
   description: "Prescriptive Clinical Decision Support Engine",
 };
 
+import { AuthProvider } from "@/contexts/AuthContext";
+import { LoginModal } from "@/components/LoginModal";
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -34,7 +37,10 @@ export default function RootLayout({
           enableSystem={false}
           disableTransitionOnChange
         >
-          {children}
+          <AuthProvider>
+            <LoginModal />
+            {children}
+          </AuthProvider>
         </ThemeProvider>
       </body>
     </html>

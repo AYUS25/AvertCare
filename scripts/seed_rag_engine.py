@@ -229,13 +229,12 @@ def run(csv_path: Path, qdrant_url: str, limit: int) -> None:
     rag_risks: list[float] = []
 
     for idx in tqdm(range(len(df))):
-        response = client.query_points(
+        results = client.search(
             collection_name=COLLECTION_NAME,
-            query=embeddings[idx].tolist(),
+            query_vector=embeddings[idx].tolist(),
             limit=RAG_K + 1,           # +1 because the point matches itself
             with_payload=True,
         )
-        results = response.points
         # Exclude self-match (score ≈ 1.0)
         neighbors = [r for r in results if r.score < 0.9999][:RAG_K]
 
