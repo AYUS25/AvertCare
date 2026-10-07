@@ -8,10 +8,8 @@ so swapping mock → real FHIR ingestion is a 1-line change.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
-
 
 # ─────────────────────────────────────────────────────────────
 # Inbound Patient Payload
@@ -56,7 +54,7 @@ class PredictResponse(BaseModel):
     shap_features: list[SHAPFeature] = Field(description="Top SHAP drivers (descending impact)")
     sdoh_flags: list[str] = Field(description="Extracted Social Determinants of Health flags")
     care_plan: list[str] = Field(description="GenAI-generated discharge intervention recommendations")
-    cms_penalty_saved_usd: Optional[float] = Field(default=None, description="Estimated CMS penalty avoidance in USD")
+    cms_penalty_saved_usd: float | None = Field(default=None, description="Estimated CMS penalty avoidance in USD")
 
 
 # ─────────────────────────────────────────────────────────────

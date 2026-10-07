@@ -5,11 +5,11 @@ Auth dependency is overridden via FastAPI dependency_overrides so tests
 never require a live Firebase project or real JWT token.
 """
 
-import pytest
 from fastapi.testclient import TestClient
 
-from app.main import create_app
 from app.core.auth import require_auth
+from app.main import create_app
+
 
 # ── Auth stub — injected for all tests ──────────────────────────────────────
 def _mock_auth():

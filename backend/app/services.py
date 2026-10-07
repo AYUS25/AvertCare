@@ -276,8 +276,7 @@ def _generate_llm_care_plan(
         # Strip markdown code fences if present
         if raw.startswith("```"):
             raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
+            raw = raw.removeprefix("json")
 
         parsed = json.loads(raw)
         return parsed.get("interventions", _generate_rule_care_plan(RiskCategory.HIGH, sdoh_flags))

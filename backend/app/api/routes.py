@@ -7,9 +7,9 @@ Auth dependency is a dev-bypass passthrough when FIREBASE_PROJECT_ID is unset.
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app import services
 from app.core.auth import require_auth
 from app.schemas import PatientEncounter, PredictResponse, TwinPatientResponse
-from app import services
 
 router = APIRouter(prefix="/api", tags=["Clinical AI"])
 

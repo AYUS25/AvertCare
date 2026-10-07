@@ -1,0 +1,5 @@
+[lint]
+ignore = [
+    "B008",    # FastAPI relies on Depends() in function signatures
+    "BLE001",  # Catching blind Exception is okay for broad LLM/HTTP fallback wrappers
+]
