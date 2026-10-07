@@ -28,9 +28,19 @@ class Settings(BaseSettings):
     FIREBASE_PROJECT_ID: str = ""
 
     # ── ML ──────────────────────────────────────────────────
-    MODEL_PATH: str = "/app/models"            # mounted Docker volume
-    RAG_COLLECTION: str = "patient_encounters"
+    MODEL_PATH: str = "/app/models"
+    RAG_COLLECTION: str = "clinical_cases"
     RAG_TOP_K: int = 3
+
+    # ── LLM ─────────────────────────────────────────────────
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-2.0-flash"
+
+    # ── Feature flags ────────────────────────────────────────
+    # Flip to True once Qdrant is seeded. Falls back to mock if False.
+    LIVE_RAG_ENABLED: bool = False
+    # Flip to True once GEMINI_API_KEY is set.
+    LIVE_LLM_ENABLED: bool = False
 
 
 settings = Settings()

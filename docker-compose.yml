@@ -2,7 +2,7 @@ version: "3.9"
 
 # ─────────────────────────────────────────────────────────────
 # AvertCare · Multi-Container Orchestration
-# Services: backend · frontend · qdrant · redis
+# Services: backend · frontend · qdrant · redis · prometheus · grafana
 # ─────────────────────────────────────────────────────────────
 
 services:
@@ -23,7 +23,7 @@ services:
       - qdrant
       - redis
     volumes:
-      - ./ml_engine/models:/app/models:ro   # mount trained .pkl artefacts (read-only)
+      - ./ml_engine/models:/app/models:ro
     networks:
       - avertcare-net
     restart: unless-stopped
@@ -55,6 +55,7 @@ services:
     container_name: avertcare-qdrant
     ports:
       - "6333:6333"
+      - "6334:6334"   # gRPC
     volumes:
       - qdrant_data:/qdrant/storage
     networks:
@@ -71,9 +72,47 @@ services:
       - avertcare-net
     restart: unless-stopped
 
+  # ── Prometheus (Metrics Scraper) ─────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: avertcare-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./grafana/provisioning/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    networks:
+      - avertcare-net
+    restart: unless-stopped
+
+  # ── Grafana (IT Ops Dashboard) ───────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: avertcare-grafana
+    ports:
+      - "3001:3000"   # Grafana on :3001 to avoid clash with Next.js
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=avertcare
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - avertcare-net
+    restart: unless-stopped
+
 # ─────────────────────────────────────────────────────────────
 volumes:
   qdrant_data:
+  prometheus_data:
+  grafana_data:
 
 networks:
   avertcare-net:
