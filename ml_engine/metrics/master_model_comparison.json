@@ -1,0 +1,224 @@
+{
+  "Logistic_Regression": {
+    "val_default_0.5": {
+      "threshold": 0.5,
+      "auroc": 0.6683,
+      "auprc": 0.2186,
+      "accuracy": 0.6715,
+      "precision": 0.1803,
+      "recall_sensitivity": 0.5309,
+      "specificity": 0.6896,
+      "f1_score": 0.2692,
+      "log_loss": 0.6502,
+      "brier_score": 0.2257,
+      "confusion_matrix": {
+        "true_negative": 6070,
+        "false_positive": 2732,
+        "false_negative": 531,
+        "true_positive": 601
+      }
+    },
+    "val_optimal_thresh": {
+      "threshold": 0.52,
+      "auroc": 0.6683,
+      "auprc": 0.2186,
+      "accuracy": 0.7092,
+      "precision": 0.1921,
+      "recall_sensitivity": 0.4841,
+      "specificity": 0.7381,
+      "f1_score": 0.275,
+      "log_loss": 0.6502,
+      "brier_score": 0.2257,
+      "confusion_matrix": {
+        "true_negative": 6497,
+        "false_positive": 2305,
+        "false_negative": 584,
+        "true_positive": 548
+      }
+    },
+    "test_default_0.5": {
+      "threshold": 0.5,
+      "auroc": 0.668,
+      "auprc": 0.2331,
+      "accuracy": 0.6667,
+      "precision": 0.1817,
+      "recall_sensitivity": 0.5495,
+      "specificity": 0.6818,
+      "f1_score": 0.2731,
+      "log_loss": 0.6478,
+      "brier_score": 0.226,
+      "confusion_matrix": {
+        "true_negative": 6002,
+        "false_positive": 2801,
+        "false_negative": 510,
+        "true_positive": 622
+      }
+    },
+    "test_optimal_thresh": {
+      "threshold": 0.52,
+      "auroc": 0.668,
+      "auprc": 0.2331,
+      "accuracy": 0.7035,
+      "precision": 0.1915,
+      "recall_sensitivity": 0.4973,
+      "specificity": 0.73,
+      "f1_score": 0.2765,
+      "log_loss": 0.6478,
+      "brier_score": 0.226,
+      "confusion_matrix": {
+        "true_negative": 6426,
+        "false_positive": 2377,
+        "false_negative": 569,
+        "true_positive": 563
+      }
+    }
+  },
+  "Random_Forest": {
+    "val_default_0.5": {
+      "threshold": 0.5,
+      "auroc": 0.6793,
+      "auprc": 0.2267,
+      "accuracy": 0.6774,
+      "precision": 0.1899,
+      "recall_sensitivity": 0.561,
+      "specificity": 0.6923,
+      "f1_score": 0.2838,
+      "log_loss": 0.6175,
+      "brier_score": 0.2134,
+      "confusion_matrix": {
+        "true_negative": 6094,
+        "false_positive": 2708,
+        "false_negative": 497,
+        "true_positive": 635
+      }
+    },
+    "val_optimal_thresh": {
+      "threshold": 0.53,
+      "auroc": 0.6793,
+      "auprc": 0.2267,
+      "accuracy": 0.7435,
+      "precision": 0.2091,
+      "recall_sensitivity": 0.4496,
+      "specificity": 0.7813,
+      "f1_score": 0.2855,
+      "log_loss": 0.6175,
+      "brier_score": 0.2134,
+      "confusion_matrix": {
+        "true_negative": 6877,
+        "false_positive": 1925,
+        "false_negative": 623,
+        "true_positive": 509
+      }
+    },
+    "test_default_0.5": {
+      "threshold": 0.5,
+      "auroc": 0.6725,
+      "auprc": 0.2324,
+      "accuracy": 0.6705,
+      "precision": 0.1846,
+      "recall_sensitivity": 0.5539,
+      "specificity": 0.6854,
+      "f1_score": 0.2769,
+      "log_loss": 0.6193,
+      "brier_score": 0.2143,
+      "confusion_matrix": {
+        "true_negative": 6034,
+        "false_positive": 2769,
+        "false_negative": 505,
+        "true_positive": 627
+      }
+    },
+    "test_optimal_thresh": {
+      "threshold": 0.53,
+      "auroc": 0.6725,
+      "auprc": 0.2324,
+      "accuracy": 0.7377,
+      "precision": 0.2038,
+      "recall_sensitivity": 0.4479,
+      "specificity": 0.775,
+      "f1_score": 0.2801,
+      "log_loss": 0.6193,
+      "brier_score": 0.2143,
+      "confusion_matrix": {
+        "true_negative": 6822,
+        "false_positive": 1981,
+        "false_negative": 625,
+        "true_positive": 507
+      }
+    }
+  },
+  "FT_Transformer": {
+    "val_default_0.5": {
+      "threshold": 0.5,
+      "auroc": 0.6761,
+      "auprc": 0.2312,
+      "accuracy": 0.8863,
+      "precision": 1.0,
+      "recall_sensitivity": 0.0027,
+      "specificity": 1.0,
+      "f1_score": 0.0053,
+      "log_loss": 0.3334,
+      "brier_score": 0.0961,
+      "confusion_matrix": {
+        "true_negative": 8802,
+        "false_positive": 0,
+        "false_negative": 1129,
+        "true_positive": 3
+      }
+    },
+    "val_optimal_thresh": {
+      "threshold": 0.15000000000000002,
+      "auroc": 0.6761,
+      "auprc": 0.2312,
+      "accuracy": 0.7389,
+      "precision": 0.206,
+      "recall_sensitivity": 0.4523,
+      "specificity": 0.7757,
+      "f1_score": 0.283,
+      "log_loss": 0.3334,
+      "brier_score": 0.0961,
+      "confusion_matrix": {
+        "true_negative": 6828,
+        "false_positive": 1974,
+        "false_negative": 620,
+        "true_positive": 512
+      }
+    },
+    "test_default_0.5": {
+      "threshold": 0.5,
+      "auroc": 0.6733,
+      "auprc": 0.2438,
+      "accuracy": 0.8865,
+      "precision": 0.8333,
+      "recall_sensitivity": 0.0044,
+      "specificity": 0.9999,
+      "f1_score": 0.0088,
+      "log_loss": 0.333,
+      "brier_score": 0.0957,
+      "confusion_matrix": {
+        "true_negative": 8802,
+        "false_positive": 1,
+        "false_negative": 1127,
+        "true_positive": 5
+      }
+    },
+    "test_optimal_thresh": {
+      "threshold": 0.15000000000000002,
+      "auroc": 0.6733,
+      "auprc": 0.2438,
+      "accuracy": 0.732,
+      "precision": 0.2009,
+      "recall_sensitivity": 0.4541,
+      "specificity": 0.7677,
+      "f1_score": 0.2785,
+      "log_loss": 0.333,
+      "brier_score": 0.0957,
+      "confusion_matrix": {
+        "true_negative": 6758,
+        "false_positive": 2045,
+        "false_negative": 618,
+        "true_positive": 514
+      }
+    }
+  }
+}
