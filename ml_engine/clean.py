@@ -240,3 +240,87 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
 
     print(f"[clean] Output shape: {df.shape}")
     return df
+
+
+def clean_inference_patient(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    Cleans raw patient DataFrame for production inference (single or batch).
+    Robustly ensures all required feature columns exist with safe defaults.
+    """
+    df = df_raw.copy()
+    df.replace("?", np.nan, inplace=True)
+
+    # Defaults for optional / missing columns in raw input
+    if "race" not in df.columns:
+        df["race"] = "Unknown"
+    else:
+        df["race"] = df["race"].fillna("Unknown")
+
+    if "gender" not in df.columns:
+        df["gender"] = "Female"
+    else:
+        df["gender"] = df["gender"].fillna("Female")
+
+    if "payer_code" not in df.columns:
+        df["payer_code"] = "Unknown"
+    else:
+        df["payer_code"] = df["payer_code"].fillna("Unknown")
+
+    if "medical_specialty" not in df.columns:
+        df["medical_specialty"] = "Unknown"
+    else:
+        df["medical_specialty"] = df["medical_specialty"].fillna("Unknown")
+
+    for col in ["max_glu_serum", "A1Cresult"]:
+        if col not in df.columns:
+            df[col] = "Not_Tested"
+        else:
+            df[col] = df[col].fillna("Not_Tested")
+            df[col] = df[col].replace({"nan": "Not_Tested", "None": "Not_Tested", "": "Not_Tested"})
+
+    for col in ["admission_type_id", "discharge_disposition_id", "admission_source_id"]:
+        if col not in df.columns:
+            df[col] = "1"
+        else:
+            df[col] = df[col].apply(
+                lambda x: str(int(x)) if pd.notnull(x) and isinstance(x, float) and x.is_integer()
+                else str(x)
+            )
+
+    for col in ["diag_1", "diag_2", "diag_3"]:
+        if col in df.columns:
+            df[f"{col}_group"] = df[col].apply(_map_icd9)
+        elif f"{col}_group" not in df.columns:
+            df[f"{col}_group"] = "Other"
+
+    if "age" in df.columns:
+        df["age_numeric"] = df["age"].apply(_age_midpoint)
+    elif "age_numeric" not in df.columns:
+        df["age_numeric"] = 65.0  # default adult age midpoint
+
+    df["total_prior_visits"] = (
+        df.get("number_outpatient", pd.Series(0, index=df.index))
+        + df.get("number_emergency", pd.Series(0, index=df.index))
+        + df.get("number_inpatient", pd.Series(0, index=df.index))
+    )
+
+    potential_med_cols = [
+        "metformin", "repaglinide", "nateglinide", "chlorpropamide",
+        "glimepiride", "acetohexamide", "glipizide", "glyburide", "tolbutamide",
+        "pioglitazone", "rosiglitazone", "acarbose", "miglitol", "troglitazone",
+        "tolazamide", "examide", "citoglipton", "insulin",
+        "glyburide-metformin", "glipizide-metformin", "glimepiride-pioglitazone",
+        "metformin-rosiglitazone", "metformin-pioglitazone",
+    ]
+    med_cols = [c for c in potential_med_cols if c in df.columns]
+    if med_cols:
+        df["num_med_changes"] = (df[med_cols].isin(["Up", "Down"])).sum(axis=1)
+        df["num_meds_active"] = (df[med_cols] != "No").sum(axis=1)
+    else:
+        if "num_med_changes" not in df.columns:
+            df["num_med_changes"] = 0
+        if "num_meds_active" not in df.columns:
+            df["num_meds_active"] = 0
+
+    return df
+
