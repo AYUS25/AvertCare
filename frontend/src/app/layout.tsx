@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider";
+import { AuthProvider } from "@/contexts/AuthContext";
+import { LoginModal } from "@/components/LoginModal";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -17,9 +19,6 @@ export const metadata: Metadata = {
   title: "AvertCare Clinical Decision Support",
   description: "Prescriptive Clinical Decision Support Engine",
 };
-
-import { AuthProvider } from "@/contexts/AuthContext";
-import { LoginModal } from "@/components/LoginModal";
 
 export default function RootLayout({
   children,
