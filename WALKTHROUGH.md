@@ -21,9 +21,10 @@ We have successfully transitioned from a 0-to-1 scaffold to a fully functional, 
 ### 3. Clinician Authentication & Security (Track 3)
 - **Firebase Auth Middleware (`app/core/auth.py`)**: Implemented a FastAPI dependency (`require_auth`) that validates Firebase JWT ID tokens on all protected routes using `firebase-admin`.
 - **Zero-Friction Dev Bypass**: When `FIREBASE_PROJECT_ID` is not set in the local `.env`, the middleware acts as a transparent passthrough, allowing UI development to proceed without requiring live authentication tokens.
+- **Setup Guide**: We have created a dedicated, step-by-step guide for configuring Firebase. See [`FIREBASE_SETUP.md`](./FIREBASE_SETUP.md).
 
 ### 4. MLOps & Observability Stack (Track 4)
-- **Multi-Container Orchestration (`docker-compose.yml`)**: Now orchestrates FastAPI, Next.js, Qdrant, Redis, Prometheus, and Grafana.
+- **Multi-Container Orchestration (`docker-compose.yml`)**: Orchestrates 6 services: FastAPI, Next.js, Qdrant, Redis, Prometheus, and Grafana. We successfully resolved complex ML dependency conflicts (PyTorch/CUDA) to ensure seamless local builds.
 - **Prometheus Scraper**: Connects to the FastAPI `/metrics` endpoint to aggregate time-series telemetry.
 - **Auto-Provisioned Grafana**: A customized Grafana dashboard (`grafana/provisioning/dashboards/avertcare.json`) is automatically loaded on boot (available at `http://localhost:3001`). It visualizes critical IT Ops metrics:
   - API Request Throughput (RPS)
@@ -35,6 +36,11 @@ We have successfully transitioned from a 0-to-1 scaffold to a fully functional, 
 - **Dark Mode Aesthetic**: A strict high-contrast dark-mode UI designed to reduce alert fatigue, mimicking modern Epic EHR interfaces without relying on heavy interactive CLI installers.
 - **Dynamic Render**: Asynchronously fetches from the FastAPI backend to gracefully render the Risk Score Gauge, SDoH warning badges, the Twin-Patient RAG cohort table, a CSS-based TreeSHAP force-plot breakdown, and the GenAI prescriptive care plan.
 
+### 6. Automated CI/CD Pipeline
+- **GitHub Actions (`.github/workflows/deploy.yml`)**: A fully automated pipeline that triggers on every push to `main`.
+- **Quality Gates**: Runs `ruff` for code linting, `bandit` for security scanning, and `pytest` for the backend test suite.
+- **Continuous Deployment**: Successfully builds and pushes the lowercase-tagged Docker image to the GitHub Container Registry (GHCR) and deploys the Next.js frontend to Vercel.
+
 ---
 
 ## 🚀 How to Run the System
@@ -44,6 +50,7 @@ We have successfully transitioned from a 0-to-1 scaffold to a fully functional, 
    docker-compose up -d --build
    ```
 2. **Seed the Vector Database (Unblocks M1):**
+   *(Note: Ensure Qdrant is running first)*
    ```bash
    pip install -r scripts/requirements-seed.txt
    python scripts/seed_rag_engine.py --csv data/raw/diabetic_data.csv
@@ -55,4 +62,4 @@ We have successfully transitioned from a 0-to-1 scaffold to a fully functional, 
 ## 🎯 Next Steps (Final M1 Handoff)
 1. **Load the Final Models**: M1 will drop the trained XGBoost `.pkl` and Bio_ClinicalBERT artifacts into the `ml_engine/models/` directory (which is mounted as a Docker volume).
 2. **Wire Inference**: Inside `backend/app/services.py`, we will replace the `run_prediction` mock logic placeholder with the actual `joblib.load()` and `xgboost` inference calls.
-3. **Frontend Auth Hookup**: Add the Firebase Auth login modal to the Next.js UI to generate and pass the Bearer tokens to the backend in production.
+3. **Frontend Auth Hookup**: Follow the instructions in [`FIREBASE_SETUP.md`](./FIREBASE_SETUP.md) to initialize the Firebase project, then we will add the login modal to the Next.js UI to generate and pass the Bearer tokens to the backend in production.
