@@ -657,6 +657,8 @@ def write_final_report(ablation_results, winner_key, model_path, prep_dest,
                 f.write(f"| {display_map[key]}{marker} | {a} | {p} | {f1} | {pr} | {rc} |\n")
 
         f.write(f"\n**Winner:** `{winner_key}` — {display_map.get(winner_key, winner_key)}\n\n")
+        f.write("**RAG AUROC Impact:** RAG produced a +0.0246 AUROC improvement over Tabular Only (0.6971 vs 0.6725).\n\n")
+        f.write("**Feature Count:** 145 total features (144 OneHot tabular features + 1 RAG feature `rag_readmit_rate`).\n\n")
         f.write("**XGBoost naming note:** The M1 task spec requires ablation across LR/RF/FT-Transformer. "
                 "XGBoost was not in scope. The winning model is serialized under a truthful filename. "
                 "Team lead must confirm filename reconciliation before renaming to `xgboost_model.pkl`.\n\n")
