@@ -2,8 +2,6 @@
 
 ## AI-Powered 30-Day Hospital Readmission Risk Prediction & Prevention
 
-**Cognizant Hackathon — Use Case #6: Hospital Readmission Risk Prediction**
-
 AvertCare is a prescriptive Clinical Decision Support (CDS) system designed to predict a patient's risk of unplanned 30-day hospital readmission and provide actionable insights to help clinicians reduce that risk.
 
 Unlike traditional systems that only provide a risk score, AvertCare combines structured patient data, clinical notes, NLP-based Social Determinants of Health (SDoH) extraction, machine learning, Retrieval-Augmented Generation (RAG), explainable AI, and Generative AI.
