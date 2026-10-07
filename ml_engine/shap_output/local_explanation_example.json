@@ -1,0 +1,26 @@
+{
+  "base_value": 0.4997545435861296,
+  "risk_score": 0.5151,
+  "top_features": [
+    {
+      "feature": "cat__discharge_disposition_id_1",
+      "impact": 0.034054
+    },
+    {
+      "feature": "num__number_inpatient",
+      "impact": -0.026229
+    },
+    {
+      "feature": "num__total_prior_visits",
+      "impact": -0.024522
+    },
+    {
+      "feature": "cat__discharge_disposition_id_3",
+      "impact": 0.021633
+    },
+    {
+      "feature": "rag_readmit_rate",
+      "impact": -0.01277
+    }
+  ]
+}

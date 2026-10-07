@@ -1,0 +1,9 @@
+{
+  "encounter_id": 221635980,
+  "ground_truth_readmitted_binary": 0,
+  "model_input_rag_readmit_rate": 0.0,
+  "expected_probability": 0.4687,
+  "expected_prediction": 0,
+  "decision_threshold_used": 0.56,
+  "winning_model": "RF_RAG"
+}
