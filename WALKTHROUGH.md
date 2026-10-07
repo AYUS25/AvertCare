@@ -1,74 +1,58 @@
 # AvertCare: Project Walkthrough & Roadmap
 
-This document outlines everything we have built so far for the **Cognizant Hackathon (Use Case #6: Hospital Readmission Risk Prediction)**, our architectural decisions, and the exact roadmap for our next phases.
+This document outlines everything we have built for the **Cognizant Hackathon (Use Case #6: Hospital Readmission Risk Prediction)**, our architectural decisions, and the exact roadmap for the final M1 model handoff.
 
 ---
 
-## 🏗️ What We Have Built So Far (The Scaffold)
+## 🏗️ What We Have Built So Far (The Full Stack)
 
-We have successfully built a loosely coupled, production-ready full-stack scaffold. This means the system is fully wired from the frontend to the backend, using deterministic mock data. 
+We have successfully transitioned from a 0-to-1 scaffold to a fully functional, loosely coupled Prescriptive Clinical Decision Support system. The architecture is feature-flagged, allowing seamless toggling between deterministic mock data and live intelligent inference.
 
-When our Data Scientist (M1) is ready, we simply swap out the mock logic for her trained models without breaking the system.
+### 1. Vector Database Seeding & RAG Feature Extraction (Track 1)
+- **Automated Pipeline (`scripts/seed_rag_engine.py`)**: An ETL script that ingests tabular patient data (`diabetic_data.csv`), generates realistic unstructured clinical notes (injecting random Social Determinants of Health), and embeds them using `sentence-transformers/all-MiniLM-L6-v2`.
+- **Qdrant Upsert & $RAG_{risk}$**: The script connects to the local Qdrant Vector DB, upserts the embeddings along with metadata (e.g., historical interventions), and calculates a localized readmission rate ($RAG_{risk}$) by querying the top-5 nearest neighbors for each patient. 
+- **M1 Handoff**: The script automatically exports `data/processed/train_with_rag.csv`, providing our Data Scientist (M1) with the augmented dataset needed to train the final XGBoost/Transformer models.
 
-### 1. Multi-Container Orchestration (Docker)
-- **`docker-compose.yml`**: Orchestrates four services on an isolated network:
-  - **`backend`**: FastAPI application.
-  - **`frontend`**: Next.js clinical dashboard.
-  - **`qdrant`**: Vector Database for our Twin-Patient RAG retrieval.
-  - **`redis`**: Caching and rate-limiting.
-- A local volume `./ml_engine/models:/app/models` is configured so that when M1's `.pkl` files are dropped into the repository, the backend container reads them instantly without needing a rebuild.
+### 2. The Backend API & Live RAG Retrieval (Track 2)
+- **FastAPI Framework**: Exposes `POST /api/predict` and `POST /api/twin-patients` using strict Pydantic v2 schemas mapped to FHIR standards.
+- **Live Qdrant Integration (`services.py`)**: The `run_rag_retrieval` service now actively embeds incoming clinical notes, queries the live Qdrant container for the top-3 most similar past patient encounters, and computes the semantic neighborhood risk index on the fly. (Controlled via `LIVE_RAG_ENABLED`).
+- **Prescriptive LLM Care Plan (`services.py`)**: Integrated the `google-genai` SDK. When `LIVE_LLM_ENABLED=true`, the backend passes the patient's risk score, extracted SDoH barriers, top SHAP drivers, and successful twin-patient interventions to the Gemini 2.0 Flash model, which synthesizes a structured, prioritized 3-point clinical discharge plan and calculates estimated CMS penalty savings.
 
-### 2. The Backend API Gateway (FastAPI / Python)
-- **Schema Contracts (`schemas.py`)**: Built strictly with Pydantic v2. The payload fields (`patient_id`, `age`, `clinical_note`, etc.) are mapped to HL7 FHIR standards.
-- **Thin Routing (`routes.py`)**: Exposes two endpoints:
-  - `POST /api/predict`: Returns readmission risk, SHAP explainability factors, SDoH flags, and a GenAI Care Plan.
-  - `POST /api/twin-patients`: Simulates the RAG engine returning historical patient twins and the calculated semantic risk index.
-- **Mock Service Layer (`services.py`)**: All business logic is isolated here. We have deterministic mock logic that dynamically updates based on the JSON payload. This is the **exact swap point** for real model inference later.
-- **Testing (`tests/test_api.py`)**: 100% passing Pytest suite validating our data contracts and SDoH keyword extraction logic.
-- **Observability (`main.py`)**: Prometheus instrumentator is already attached, exposing the `/metrics` endpoint for MLOps tracking.
+### 3. Clinician Authentication & Security (Track 3)
+- **Firebase Auth Middleware (`app/core/auth.py`)**: Implemented a FastAPI dependency (`require_auth`) that validates Firebase JWT ID tokens on all protected routes using `firebase-admin`.
+- **Zero-Friction Dev Bypass**: When `FIREBASE_PROJECT_ID` is not set in the local `.env`, the middleware acts as a transparent passthrough, allowing UI development to proceed without requiring live authentication tokens.
 
-### 3. The Clinical Dashboard (Next.js / TypeScript)
-- **Tech Stack**: Next.js 15 (App Router), Tailwind CSS, and `lucide-react`.
-- **Dark Mode Aesthetic**: Implemented `next-themes` and a `ThemeProvider` to strictly enforce a high-contrast dark-mode UI, reducing alert fatigue and mimicking modern Epic EHR interfaces.
-- **Zero-Bloat UI (`page.tsx`)**: Instead of relying heavily on interactive CLI installers which can cause bloat, the UI is built using raw Tailwind classes that visually match Shadcn/UI standards. 
-- **Dynamic Fetching**: The dashboard holds a mock FHIR payload state. Clicking "Analyze Patient Record" asynchronously fires requests to our local FastAPI endpoints and gracefully renders:
-  - The Risk Score Gauge.
-  - Extracted Social Determinants of Health (SDoH) warning badges.
-  - A table of Twin-Patient RAG cohorts.
-  - A visual CSS-based TreeSHAP force-plot breakdown.
-  - A formatted GenAI prescriptive care plan with CMS Penalty ROI estimates.
+### 4. MLOps & Observability Stack (Track 4)
+- **Multi-Container Orchestration (`docker-compose.yml`)**: Now orchestrates FastAPI, Next.js, Qdrant, Redis, Prometheus, and Grafana.
+- **Prometheus Scraper**: Connects to the FastAPI `/metrics` endpoint to aggregate time-series telemetry.
+- **Auto-Provisioned Grafana**: A customized Grafana dashboard (`grafana/provisioning/dashboards/avertcare.json`) is automatically loaded on boot (available at `http://localhost:3001`). It visualizes critical IT Ops metrics:
+  - API Request Throughput (RPS)
+  - P95 / P99 Inference Latency
+  - HTTP 2xx Success vs. 4xx/5xx Error Rates
 
-### 4. CI/CD & DevOps
-- **Dockerfiles**: We created highly optimized Dockerfiles for both services (e.g., using `node:20-alpine` standalone for the frontend and `python:3.11-slim` for the backend).
-- **GitHub Actions (`deploy.yml`)**: An automated 4-stage pipeline is live. On every push to `main`, it:
-  1. Lints (Ruff) and runs Security Scans (Bandit).
-  2. Runs the Pytest suite.
-  3. Builds and pushes the Backend Docker image to GHCR.
-  4. Deploys the Frontend directly to Vercel.
+### 5. The Clinical Dashboard (Next.js)
+- **Tech Stack**: Next.js 15 (Node 20), Tailwind CSS, and `next-themes`.
+- **Dark Mode Aesthetic**: A strict high-contrast dark-mode UI designed to reduce alert fatigue, mimicking modern Epic EHR interfaces without relying on heavy interactive CLI installers.
+- **Dynamic Render**: Asynchronously fetches from the FastAPI backend to gracefully render the Risk Score Gauge, SDoH warning badges, the Twin-Patient RAG cohort table, a CSS-based TreeSHAP force-plot breakdown, and the GenAI prescriptive care plan.
 
 ---
 
-## 🚀 What We Are Building Next (The Roadmap)
+## 🚀 How to Run the System
 
-Now that the 0-to-1 scaffolding is complete, here is my understanding of what we must tackle next to complete the hackathon objective.
-
-### Phase 1: Model Injection (Handoff from M1)
-1. **Load the Models**: Drop M1's trained XGBoost `.pkl` and Bio_ClinicalBERT artifacts into `ml_engine/models/`.
-2. **Wire Inference**: Open `backend/app/services.py`, delete the mock logic in `run_prediction`, and load the real models using `joblib`/`xgboost`.
-3. **Wire Qdrant**: Replace the mock twin-patient logic in `run_rag_retrieval`. We will embed the inbound `clinical_note` using our BERT model, query the live Qdrant container, and fetch the real $RAG_{risk}$ index.
-
-### Phase 2: Live LLM Care Plan Generation
-- Currently, the 3-point discharge plan is generated via simple `if/else` logic.
-- We will integrate the Gemini API (or OpenAI API) into the backend. The LLM prompt will synthesize the XGBoost risk score, the SHAP features, and the successful interventions from the RAG twins to generate a highly personalized, natural-language discharge plan.
-
-### Phase 3: Firebase Auth Integration (Clinician Login)
-- Hospital systems require secure access. We will add a login page to the Next.js frontend using Firebase Auth.
-- We will pass the Firebase JWT token in the `Authorization` header of our API calls.
-- In FastAPI, we will add a dependency to decode and validate the JWT before processing the FHIR payload.
-
-### Phase 4: MLOps Dashboard (Grafana)
-- Since the `/metrics` endpoint is already live on FastAPI, we will add a Grafana container to `docker-compose.yml`.
-- We will build a dashboard for IT Ops to monitor inference latency (ms), ensuring we meet the "Real-Time Decision" SLAs outlined in the PDD.
+1. **Spin up Infrastructure:**
+   ```bash
+   docker-compose up -d --build
+   ```
+2. **Seed the Vector Database (Unblocks M1):**
+   ```bash
+   pip install -r scripts/requirements-seed.txt
+   python scripts/seed_rag_engine.py --csv data/raw/diabetic_data.csv
+   ```
+3. **Enable Live Features:** Add your `GEMINI_API_KEY` to `backend/.env` and set `LIVE_RAG_ENABLED=true` and `LIVE_LLM_ENABLED=true`.
 
 ---
-*The system is highly decoupled. M1 can focus strictly on model weights, while I handle the integration and frontend state.*
+
+## 🎯 Next Steps (Final M1 Handoff)
+1. **Load the Final Models**: M1 will drop the trained XGBoost `.pkl` and Bio_ClinicalBERT artifacts into the `ml_engine/models/` directory (which is mounted as a Docker volume).
+2. **Wire Inference**: Inside `backend/app/services.py`, we will replace the `run_prediction` mock logic placeholder with the actual `joblib.load()` and `xgboost` inference calls.
+3. **Frontend Auth Hookup**: Add the Firebase Auth login modal to the Next.js UI to generate and pass the Bearer tokens to the backend in production.
