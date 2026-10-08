@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import logging
+import pandas as pd
+import numpy as np
 from functools import lru_cache
 
 from app.core.config import settings
@@ -64,43 +66,126 @@ def _get_gemini_client():
 # Predict Service
 # ─────────────────────────────────────────────────────────────
 
+@lru_cache(maxsize=1)
+def _get_ml_artifacts():
+    import joblib
+    import os
+    
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    MODELS_DIR = os.path.join(os.path.dirname(BASE_DIR), "models")
+    
+    model = joblib.load(os.path.join(MODELS_DIR, "best_model.joblib"))
+    preprocessor = joblib.load(os.path.join(MODELS_DIR, "preprocessor.joblib"))
+    if isinstance(preprocessor, dict):
+        preprocessor = preprocessor["preprocessor"]
+        
+    with open(os.path.join(MODELS_DIR, "feature_names.json")) as f:
+        meta = json.load(f)
+        
+    return {
+        "model": model,
+        "preprocessor": preprocessor,
+        "meta": meta
+    }
+
+
 def run_prediction(payload: PatientEncounter) -> PredictResponse:
     """
-    TODO: REAL MODEL → load XGBoost + ClinicalBERT from MODEL_PATH,
-    run inference, compute TreeSHAP values.
-    Currently: deterministic mock based on payload signals.
+    REAL MODEL inference using XGBoost / Random Forest + RAG pipeline.
     """
-    raw_score = min(
-        0.3
-        + (payload.num_prior_admissions * 0.12)
-        + (payload.num_medications * 0.02)
-        + (0.08 if payload.time_in_hospital > 5 else 0),
-        1.0,
-    )
-
+    artifacts = _get_ml_artifacts()
+    model = artifacts["model"]
+    prep = artifacts["preprocessor"]
+    meta = artifacts["meta"]
+    
+    # 1. Run RAG retrieval to get the readmit rate (if live)
+    rag_response = run_rag_retrieval(payload)
+    rag_rate = rag_response.rag_readmission_rate
+    
+    # 2. Construct raw pandas DataFrame
+    data = {
+        'age_numeric': [payload.age],
+        'num_lab_procedures': [40],
+        'num_med_changes': [0],
+        'num_medications': [payload.num_medications],
+        'num_meds_active': [payload.num_medications],
+        'num_procedures': [0],
+        'number_diagnoses': [1],
+        'number_emergency': [0],
+        'number_inpatient': [payload.num_prior_admissions],
+        'number_outpatient': [0],
+        'time_in_hospital': [payload.time_in_hospital],
+        'total_prior_visits': [payload.num_prior_admissions],
+        'A1Cresult': ['Not_Tested'],
+        'admission_source_id': ['Other'],
+        'admission_type_id': ['Other'],
+        'change': ['No'],
+        'diabetesMed': ['No'],
+        'diag_1_group': ['Other'],
+        'diag_2_group': ['Other'],
+        'diag_3_group': ['Other'],
+        'discharge_disposition_id': ['1'],
+        'gender': ['Unknown'],
+        'glimepiride': ['No'],
+        'glipizide': ['No'],
+        'glyburide': ['No'],
+        'insulin': ['No'],
+        'max_glu_serum': ['Not_Tested'],
+        'medical_specialty': ['Unknown'],
+        'metformin': ['No'],
+        'payer_code': ['Unknown'],
+        'pioglitazone': ['No'],
+        'race': ['Unknown'],
+        'repaglinide': ['No'],
+        'rosiglitazone': ['No']
+    }
+    df = pd.DataFrame(data)
+    
+    # 3. Transform and append RAG
+    X_tab = prep.transform(df)
+    if meta["uses_rag"]:
+        X_input = np.hstack([X_tab, np.array([[rag_rate]])])
+    else:
+        X_input = X_tab
+        
+    # 4. Predict
+    prob = float(model.predict_proba(X_input)[:, 1][0])
+    raw_score = prob
+    
     risk_category = (
         RiskCategory.HIGH if raw_score >= 0.65
         else RiskCategory.MODERATE if raw_score >= 0.40
         else RiskCategory.LOW
     )
-
-    shap_features = [
-        SHAPFeature(feature="num_prior_admissions", impact=round(payload.num_prior_admissions * 0.12, 3)),
-        SHAPFeature(feature="time_in_hospital",      impact=round(payload.time_in_hospital * 0.015, 3)),
-        SHAPFeature(feature="num_medications",       impact=round(payload.num_medications * 0.02, 3)),
-        SHAPFeature(feature="age",                   impact=round((payload.age - 50) * 0.003, 3)),
-    ]
-    shap_features.sort(key=lambda x: abs(x.impact), reverse=True)
-
+    
+    # 5. SHAP values
+    try:
+        import shap
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X_input)
+        sv = shap_values[1] if isinstance(shap_values, list) else shap_values
+        sv = sv[0]  # get first row
+        
+        feature_names = meta["feature_names"]
+        shap_features = [
+            SHAPFeature(feature=feature_names[i], impact=round(float(sv[i]), 4))
+            for i in range(len(feature_names))
+        ]
+        shap_features.sort(key=lambda x: abs(x.impact), reverse=True)
+        shap_features = shap_features[:5]
+    except Exception as e:
+        logger.warning(f"SHAP explanation failed: {e}")
+        shap_features = []
+        
     sdoh_flags = _extract_sdoh_flags(payload.clinical_note)
-
-    # Care plan: Gemini if enabled, else rule-based
+    
+    # 6. Care plan
     care_plan = (
         _generate_llm_care_plan(raw_score, sdoh_flags, shap_features)
         if settings.LIVE_LLM_ENABLED
         else _generate_rule_care_plan(risk_category, sdoh_flags)
     )
-
+    
     cms_saved = round(15_400 * raw_score, 2) if risk_category == RiskCategory.HIGH else None
 
     return PredictResponse(
