@@ -8,8 +8,8 @@
 | Logistic Regression | Tabular + RAG | 0.6918 | 0.3135 | 0.3167 | 0.3041 | 0.3304 | 0.9028 | 0.0238 |
 | Random Forest | Tabular Only | 0.6725 | 0.2324 | 0.2801 | 0.2038 | 0.4479 | 0.775 | nan |
 | Random Forest | Tabular + RAG | 0.6971 | 0.3115 | 0.3119 | 0.2668 | 0.3754 | 0.8673 | 0.0246 |
-| FT-Transformer | Tabular Only | 0.6542 | 0.2195 | 0.2733 | 0.1899 | 0.4876 | 0.7325 | nan |
-| FT-Transformer | Tabular + RAG | 0.6634 | 0.2632 | 0.2878 | 0.212 | 0.4479 | 0.786 | 0.0092 |
+| FT-Transformer | Tabular Only | 0.6607 | 0.2185 | 0.2619 | 0.1679 | 0.5945 | 0.6212 | nan |
+| FT-Transformer | Tabular + RAG | 0.6662 | 0.2679 | 0.286 | 0.2271 | 0.386 | 0.8311 | 0.0055 |
 
 _AUROC Δ = RAG model AUROC minus Tabular-only AUROC (positive = improvement)_
 

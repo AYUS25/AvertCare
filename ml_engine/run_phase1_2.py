@@ -48,7 +48,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import joblib
 
-# Local imports (run from ml_engine/ directory)
+# Add ml_engine directory to path so local imports work from any working directory
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from clean import clean_data
 from split import split_data, build_preprocessors
 

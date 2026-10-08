@@ -4,12 +4,16 @@ AvertCare Hospital Readmission Prediction System
 """
 
 import os
+import sys
 import json
 import joblib
 import torch
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
+# Add ml_engine directory to path so local imports work from any working directory
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from evaluate import compute_metrics, find_optimal_threshold, plot_roc_curves, plot_pr_curves, save_metrics_summary
 from train_baselines import train_and_evaluate_baselines

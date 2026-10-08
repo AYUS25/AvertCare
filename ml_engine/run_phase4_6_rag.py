@@ -21,7 +21,7 @@ import matplotlib.pyplot as plt
 import torch
 
 # Add ml_engine dir to path so local imports work
-sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from evaluate import (
     compute_metrics,
