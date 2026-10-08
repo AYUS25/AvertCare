@@ -152,7 +152,7 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
 # 4. Main Pipeline
 # ─────────────────────────────────────────────────────────────
 
-def run(csv_path: Path, qdrant_url: str, limit: int) -> None:
+def run(csv_path: Path, qdrant_url: str, limit: int, api_key: str = "") -> None:
     print("\n=== AvertCare · RAG Seeding Pipeline ===\n")
 
     # Load & preprocess
@@ -182,7 +182,7 @@ def run(csv_path: Path, qdrant_url: str, limit: int) -> None:
 
     # Connect to Qdrant
     print(f"\n📡 Connecting to Qdrant at {qdrant_url}…")
-    client = QdrantClient(url=qdrant_url, timeout=60)
+    client = QdrantClient(url=qdrant_url, api_key=api_key if api_key else None, timeout=60)
     initialise_collection(client)
 
     # Upsert in batches
@@ -266,6 +266,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AvertCare RAG Seeding Pipeline")
     parser.add_argument("--csv", type=Path, default=Path("data/raw/diabetic_data.csv"))
     parser.add_argument("--qdrant", type=str, default="http://localhost:6333")
+    parser.add_argument("--api-key", type=str, default="", help="Qdrant Cloud API Key")
     parser.add_argument("--limit", type=int, default=10_000, help="Row limit (0 = all)")
     args = parser.parse_args()
 
@@ -276,4 +277,4 @@ if __name__ == "__main__":
             "   Place as: data/raw/diabetic_data.csv\n"
         )
 
-    run(args.csv, args.qdrant, args.limit)
+    run(args.csv, args.qdrant, args.limit, args.api_key)
