@@ -1,66 +1,103 @@
 # AvertCare: Project Walkthrough & Roadmap
 
-This document outlines everything we have built for the **Cognizant Hackathon (Use Case #6: Hospital Readmission Risk Prediction)**, our architectural decisions, and the exact roadmap for the final M1 model handoff.
+This document outlines everything we have built for the **Cognizant Hackathon (Use Case #6: Hospital Readmission Risk Prediction)**, our architectural decisions, and the current system status.
 
 ---
 
-## 🏗️ What We Have Built So Far (The Full Stack)
+## 🏗️ What We Have Built (The Full Stack)
 
-We have successfully transitioned from a 0-to-1 scaffold to a fully functional, loosely coupled Prescriptive Clinical Decision Support system. The architecture is feature-flagged, allowing seamless toggling between deterministic mock data and live intelligent inference.
-
-### 1. Vector Database Seeding & RAG Feature Extraction (Track 1)
-- **Automated Pipeline (`scripts/seed_rag_engine.py`)**: An ETL script that ingests tabular patient data (`diabetic_data.csv`), generates realistic unstructured clinical notes (injecting random Social Determinants of Health), and embeds them using `sentence-transformers/all-MiniLM-L6-v2`.
-- **Qdrant Upsert & $RAG_{risk}$**: The script connects to the local Qdrant Vector DB, upserts the embeddings along with metadata (e.g., historical interventions), and calculates a localized readmission rate ($RAG_{risk}$) by querying the top-5 nearest neighbors for each patient. 
-- **M1 Handoff**: The script automatically exports `data/processed/train_with_rag.csv`, providing our Data Scientist (M1) with the augmented dataset needed to train the final XGBoost/Transformer models.
-
-### 2. The Backend API & Live RAG Retrieval (Track 2)
-- **FastAPI Framework**: Exposes `POST /api/predict` and `POST /api/twin-patients` using strict Pydantic v2 schemas mapped to FHIR standards.
-- **Live Qdrant Integration (`services.py`)**: The `run_rag_retrieval` service now actively embeds incoming clinical notes, queries the live Qdrant container for the top-3 most similar past patient encounters, and computes the semantic neighborhood risk index on the fly. (Controlled via `LIVE_RAG_ENABLED`).
-- **Prescriptive LLM Care Plan (`services.py`)**: Integrated the `google-genai` SDK. When `LIVE_LLM_ENABLED=true`, the backend passes the patient's risk score, extracted SDoH barriers, top SHAP drivers, and successful twin-patient interventions to the Gemini 2.0 Flash model, which synthesizes a structured, prioritized 3-point clinical discharge plan and calculates estimated CMS penalty savings.
-
-### 3. Clinician Authentication & Security (Track 3)
-- **Firebase Auth Middleware (`app/core/auth.py`)**: Implemented a FastAPI dependency (`require_auth`) that validates Firebase JWT ID tokens on all protected routes using `firebase-admin`.
-- **Frontend Integration (`src/contexts/AuthContext.tsx`)**: Fully integrated the Firebase Client SDK into the Next.js frontend. A `LoginModal` intercepts all unauthenticated users and forces secure login before allowing access to the dashboard.
-- **Secure Token Injection**: The Next.js frontend automatically attaches the resolved Bearer token to all `fetch` requests sent to the FastAPI backend.
-
-### 4. MLOps & Observability Stack (Track 4)
-- **Multi-Container Orchestration (`docker-compose.yml`)**: Orchestrates 6 services: FastAPI, Next.js, Qdrant, Redis, Prometheus, and Grafana. We successfully resolved complex ML dependency conflicts (PyTorch/CUDA) to ensure seamless local builds.
-- **Prometheus Scraper**: Connects to the FastAPI `/metrics` endpoint to aggregate time-series telemetry.
-- **Auto-Provisioned Grafana**: A customized Grafana dashboard (`grafana/provisioning/dashboards/avertcare.json`) is automatically loaded on boot (available at `http://localhost:3001`). It visualizes critical IT Ops metrics:
-  - API Request Throughput (RPS)
-  - P95 / P99 Inference Latency
-  - HTTP 2xx Success vs. 4xx/5xx Error Rates
-
-### 5. The Clinical Dashboard (Next.js)
-- **Tech Stack**: Next.js 16 (Node 20), Tailwind CSS v4, and `next-themes`.
-- **Styling Architecture**: Completely upgraded to the Tailwind v4 PostCSS compilation pipeline to resolve Webpack/Turbopack compatibility issues within Docker production builds.
-- **Dark Mode Aesthetic**: A strict high-contrast dark-mode UI designed to reduce alert fatigue, mimicking modern Epic EHR interfaces.
-- **Dynamic Render**: Asynchronously fetches from the FastAPI backend to gracefully render the Risk Score Gauge, SDoH warning badges, the Twin-Patient RAG cohort table, a CSS-based TreeSHAP force-plot breakdown, and the GenAI prescriptive care plan.
-
-### 6. Automated CI/CD Pipeline
-- **GitHub Actions (`.github/workflows/deploy.yml`)**: A fully automated pipeline that triggers on every push to `main`.
-- **Quality Gates**: Runs `ruff` for code linting, `bandit` for security scanning, and `pytest` for the backend test suite.
-- **Continuous Deployment**: Successfully builds and pushes the lowercase-tagged Docker image to the GitHub Container Registry (GHCR) using the dynamic `${{ github.repository }}` variable to support org migrations.
+We have successfully built a fully functional, loosely coupled **Prescriptive Clinical Decision Support System** with 7 containerised services, an end-to-end ML pipeline, and a clinician-facing dark-mode dashboard.
 
 ---
 
-## 🚀 How to Run the System
+### 1. Vector Database Seeding & RAG Feature Extraction
+- **Automated Pipeline (`scripts/seed_rag_engine.py`)**: Ingests tabular patient data (`diabetic_data.csv`), generates unstructured clinical notes (injecting Social Determinants of Health), and embeds them using `sentence-transformers/all-MiniLM-L6-v2`.
+- **Qdrant Upsert & RAGrisk**: Connects to the local Qdrant Vector DB, upserts embeddings along with metadata, and calculates a localised readmission rate by querying the top-5 nearest neighbours.
+- **M1 Handoff**: Automatically exports `data/processed/train_with_rag.csv` — the augmented dataset used to train the final models.
 
-1. **Spin up Infrastructure:**
-   ```bash
-   docker-compose up -d --build
-   ```
-2. **Seed the Vector Database (Unblocks M1):**
-   *(Note: Ensure Qdrant is running first)*
-   ```bash
-   pip install -r scripts/requirements-seed.txt
-   python scripts/seed_rag_engine.py --csv data/raw/diabetic_data.csv
-   ```
-3. **Enable Live Features:** Add your `GEMINI_API_KEY` to `backend/.env` and set `LIVE_RAG_ENABLED=true` and `LIVE_LLM_ENABLED=true`.
+### 2. ML Engine — Phase 4–6 (M1's Work)
+- **RAG Ablation Study** (`ml_engine/run_phase4_6_rag.py`): Trained and evaluated 6 models (Logistic Regression, Random Forest, FT-Transformer) × (Tabular Only, Tabular + RAG) on the augmented dataset.
+- **Winning Model**: **Random Forest + RAG (`RF_RAG`)** — AUROC 0.6971 vs. 0.6725 Tabular-only (+0.0246 from RAG).
+- **SHAP Explainability**: Global and local SHAP explanations generated; stored in `ml_engine/shap_output/`.
+- **Backend Handoff Artifacts** (in `backend/models/`):
+  - `best_model.joblib` — the serialized RF_RAG classifier
+  - `preprocessor.joblib` — the fitted ColumnTransformer (OneHot + StandardScaler)
+  - `feature_names.json` — ordered feature names + metadata
+  - `sample_test_patient.json` — end-to-end inference verification
+
+### 3. Backend API & Live Inference
+- **FastAPI Framework**: Exposes `POST /api/predict` and `POST /api/twin-patients` with strict Pydantic v2 schemas.
+- **Live ML Inference** (`app/services.py`): When model artifacts are mounted, performs real RF_RAG inference. Gracefully falls back to a deterministic mock when artifacts are absent (CI environments).
+- **Live RAG Retrieval**: Embeds incoming clinical notes, queries Qdrant for the top-3 most similar past encounters, and computes the semantic risk index.
+- **Prescriptive LLM Care Plan**: When `LIVE_LLM_ENABLED=true`, calls Gemini 2.0 Flash to generate a structured 3-point discharge plan.
+
+### 4. Clinician Authentication & Security
+- **Firebase Auth Middleware** (`app/core/auth.py`): Validates Firebase JWT tokens on all protected routes.
+- **Frontend Integration** (`src/contexts/AuthContext.tsx`): A `LoginModal` intercepts unauthenticated users. Firebase ID tokens are injected as Bearer headers in all API calls.
+- **Dev Bypass**: When `FIREBASE_PROJECT_ID` is unset, the middleware is transparent (useful for CI/CD).
+
+### 5. MLOps & Observability Stack
+- **Docker Compose** orchestrates 6 services: FastAPI, Next.js, Qdrant, Redis, Prometheus, Grafana.
+- **Prometheus** scrapes `/metrics` from the FastAPI backend.
+- **Grafana** auto-provisions a dashboard (available at `http://localhost:3001`) visualising:
+  - API request throughput (RPS)
+  - P95/P99 inference latency
+  - HTTP 2xx/4xx/5xx error rates
+
+### 6. The Clinical Dashboard (Next.js 16)
+- **Tech Stack**: Next.js 16, Tailwind CSS v4 (PostCSS pipeline), TypeScript.
+- **Dark Mode UI**: High-contrast dark-mode mimicking Epic EHR aesthetics.
+- **Dynamic Render**: Fetches from FastAPI to render the Risk Score Gauge, SDoH badges, Twin-Patient RAG cohort table, TreeSHAP force-plot, and GenAI care plan.
+
+### 7. CI/CD Pipeline
+- **GitHub Actions** (`deploy.yml`): Triggers on every push to `main`.
+- **Quality Gates**: `ruff` linting, `bandit` security scan, `pytest` suite.
+- **Deployment**: Builds and pushes the Docker image to GHCR under the `avert-care` organisation.
 
 ---
 
-## 🎯 Next Steps (Final M1 Handoff)
-1. **Push to GitHub**: Commit the latest UI fixes and `train_with_rag.csv` dataset to GitHub. M1 will pull this branch to access the processed dataset directly.
-2. **Load the Final Models**: M1 will write the Jupyter Notebooks to train the XGBoost and Bio_ClinicalBERT models, dropping the final artifacts into the `ml_engine/models/` directory (which is mounted as a Docker volume).
-3. **Wire Inference**: Inside `backend/app/services.py`, we will replace the `run_prediction` mock logic placeholder with the actual `joblib.load()` and `xgboost` inference calls.
+## 🚀 Universal Setup (For All Team Members)
+
+> **One-command setup after `git pull develop`:**
+
+```bash
+# 1. Copy environment files
+cp backend/.env.example backend/.env          # Fill in GEMINI_API_KEY
+cp frontend/.env.example frontend/.env.production  # Fill in Firebase config
+
+# 2. Spin up all 6 services
+docker compose up -d --build
+
+# 3. Seed Qdrant (first time only)
+pip install -r scripts/requirements-seed.txt
+python scripts/seed_rag_engine.py --csv data/raw/diabetic_data.csv
+
+# 4. Open the dashboard
+open http://localhost:3000
+```
+
+> **Service URLs after startup:**
+> | Service | URL |
+> |---|---|
+> | Dashboard | http://localhost:3000 |
+> | API Docs | http://localhost:8000/docs |
+> | Qdrant UI | http://localhost:6333/dashboard |
+> | Grafana | http://localhost:3001 (admin / avertcare) |
+> | Prometheus | http://localhost:9090 |
+
+---
+
+## ⚙️ Feature Flags (in `backend/.env`)
+
+| Flag | Default | Effect |
+|---|---|---|
+| `LIVE_RAG_ENABLED` | `true` | Uses live Qdrant retrieval; falls back to mock if `false` |
+| `LIVE_LLM_ENABLED` | `false` | Calls Gemini 2.0 Flash; uses rule-based plan if `false` |
+
+---
+
+## 🎯 Next Steps
+
+1. **Wire remaining frontend fields**: Expose more patient data fields in the UI (A1C result, medication type, etc.) so the RF_RAG model can use richer input data beyond the current defaults.
+2. **Production deployment**: Configure Vercel for the frontend; deploy the FastAPI backend to Cloud Run or a VM with the Docker image from GHCR.
+3. **CI/CD model update flow**: When M1 updates `.joblib` files, push to the `develop` branch — Docker restarts with the new model via the volume mount.

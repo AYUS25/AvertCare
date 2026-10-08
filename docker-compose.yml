@@ -1,55 +1,81 @@
-version: "3.9"
-
-# ─────────────────────────────────────────────────────────────
-# AvertCare · Multi-Container Orchestration
-# Services: backend · frontend · qdrant · redis · prometheus · grafana
-# ─────────────────────────────────────────────────────────────
+## ─────────────────────────────────────────────────────────────────────────────
+## AvertCare · Universal Docker Compose
+## All 7 services share one bridge network (avertcare-net).
+## Pull develop → docker compose up --build → everything works.
+##
+## Ports (host → container)
+##   Frontend   : 3000 → 3000   (Next.js dashboard)
+##   Backend    : 8000 → 8000   (FastAPI + ML inference)
+##   Qdrant     : 6333 → 6333   (Vector DB HTTP)
+##              : 6334 → 6334   (Vector DB gRPC)
+##   Redis      : 6379 → 6379   (Cache + rate-limit)
+##   Prometheus : 9090 → 9090   (Metrics)
+##   Grafana    : 3001 → 3000   (Ops dashboard)
+## ─────────────────────────────────────────────────────────────────────────────
 
 services:
 
-  # ── FastAPI Inference & API Gateway ─────────────────────────
+  # ── FastAPI Inference & API Gateway ─────────────────────────────────────────
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    image: avertcare-backend:latest
     container_name: avertcare-backend
     ports:
       - "8000:8000"
-    env_file: ./backend/.env
+    env_file:
+      - ./backend/.env
     environment:
+      # Override localhost URLs with Docker-internal service names
       - QDRANT_URL=http://qdrant:6333
       - REDIS_URL=redis://redis:6379
     depends_on:
-      - qdrant
-      - redis
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_started
     volumes:
-      - ./ml_engine/models:/app/models:ro
+      # Models are mounted read-only from the committed backend/models directory.
+      # Every developer gets the same trained artifacts after git pull.
+      - ./backend/models:/app/models:ro
     networks:
       - avertcare-net
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 15s
+      interval: 20s
       timeout: 5s
-      retries: 3
+      retries: 5
+      start_period: 30s
 
-  # ── Next.js Clinical Dashboard ───────────────────────────────
+  # ── Next.js Clinical Dashboard ───────────────────────────────────────────────
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    image: avertcare-frontend:latest
     container_name: avertcare-frontend
     ports:
       - "3000:3000"
     environment:
+      # The API is accessed from the *browser*, so it must use localhost, not
+      # the Docker service name. This is correct for local dev.
       - NEXT_PUBLIC_API_URL=http://localhost:8000
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - avertcare-net
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
-  # ── Qdrant Vector DB (RAG Engine) ───────────────────────────
+  # ── Qdrant Vector DB (RAG Engine) ────────────────────────────────────────────
   qdrant:
     image: qdrant/qdrant:v1.8.4
     container_name: avertcare-qdrant
@@ -61,18 +87,31 @@ services:
     networks:
       - avertcare-net
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
 
-  # ── Redis (Caching + Rate Limiting) ─────────────────────────
+  # ── Redis (Caching + Rate Limiting) ──────────────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: avertcare-redis
+    command: redis-server --save 60 1 --loglevel warning
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
     networks:
       - avertcare-net
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
 
-  # ── Prometheus (Metrics Scraper) ─────────────────────────────
+  # ── Prometheus (Metrics Scraper) ──────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:v2.51.2
     container_name: avertcare-prometheus
@@ -84,16 +123,18 @@ services:
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.retention.time=7d"
+    depends_on:
+      - backend
     networks:
       - avertcare-net
     restart: unless-stopped
 
-  # ── Grafana (IT Ops Dashboard) ───────────────────────────────
+  # ── Grafana (IT Ops Dashboard) ────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:10.4.2
     container_name: avertcare-grafana
     ports:
-      - "3001:3000"   # Grafana on :3001 to avoid clash with Next.js
+      - "3001:3000"   # :3001 on host to avoid clash with Next.js on :3000
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=avertcare
@@ -108,12 +149,18 @@ services:
       - avertcare-net
     restart: unless-stopped
 
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 volumes:
   qdrant_data:
+    name: avertcare_qdrant_data
+  redis_data:
+    name: avertcare_redis_data
   prometheus_data:
+    name: avertcare_prometheus_data
   grafana_data:
+    name: avertcare_grafana_data
 
 networks:
   avertcare-net:
+    name: avertcare-net
     driver: bridge
