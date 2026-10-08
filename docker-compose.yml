@@ -152,15 +152,10 @@ services:
 # ─────────────────────────────────────────────────────────────────────────────
 volumes:
   qdrant_data:
-    name: avertcare_qdrant_data
   redis_data:
-    name: avertcare_redis_data
   prometheus_data:
-    name: avertcare_prometheus_data
   grafana_data:
-    name: avertcare_grafana_data
 
 networks:
   avertcare-net:
-    name: avertcare-net
     driver: bridge
