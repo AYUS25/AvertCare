@@ -26,6 +26,11 @@ type PatientEncounter = {
   num_prior_admissions: number;
   num_medications: number;
   clinical_note: string;
+  // Extended clinical fields for richer ML inference
+  a1c_result: "None" | ">7" | ">8" | "Norm";
+  number_inpatient: number;
+  diabetes_med: "Yes" | "No";
+  gender: "Male" | "Female" | "Unknown";
 };
 
 type SHAPFeature = {
@@ -69,7 +74,12 @@ const MOCK_PATIENT: PatientEncounter = {
   num_prior_admissions: 2,
   num_medications: 8,
   clinical_note: "Patient lives alone and has expressed concerns about inability to afford insulin. Polypharmacy noted. Blood glucose stabilizing. Discharge planned for tomorrow. Transport home is currently unarranged.",
+  a1c_result: ">8",
+  number_inpatient: 2,
+  diabetes_med: "Yes",
+  gender: "Female",
 };
+
 
 export default function Dashboard() {
   const [patient, setPatient] = useState<PatientEncounter>(MOCK_PATIENT);
@@ -198,6 +208,70 @@ export default function Dashboard() {
               </div>
 
               <div className="space-y-2 pt-4">
+                <label className="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">
+                  Clinical Lab & Medication Profile
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+
+                  {/* A1C Result */}
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">A1C Result</label>
+                    <select
+                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      value={patient.a1c_result}
+                      onChange={(e) => setPatient({...patient, a1c_result: e.target.value as PatientEncounter["a1c_result"]})}
+                    >
+                      <option value="None">Not Tested</option>
+                      <option value="Norm">Normal (&lt;7)</option>
+                      <option value=">7">High (&gt;7)</option>
+                      <option value=">8">Very High (&gt;8)</option>
+                    </select>
+                  </div>
+
+                  {/* Gender */}
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Gender</label>
+                    <select
+                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      value={patient.gender}
+                      onChange={(e) => setPatient({...patient, gender: e.target.value as PatientEncounter["gender"]})}
+                    >
+                      <option value="Male">Male</option>
+                      <option value="Female">Female</option>
+                      <option value="Unknown">Unknown</option>
+                    </select>
+                  </div>
+
+                  {/* Diabetes Meds */}
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Diabetes Meds</label>
+                    <select
+                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      value={patient.diabetes_med}
+                      onChange={(e) => setPatient({...patient, diabetes_med: e.target.value as "Yes" | "No"})}
+                    >
+                      <option value="Yes">Yes</option>
+                      <option value="No">No</option>
+                    </select>
+                  </div>
+
+                  {/* Number of Inpatient Visits */}
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Inpatient Visits (1yr)</label>
+                    <select
+                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      value={patient.number_inpatient}
+                      onChange={(e) => setPatient({...patient, number_inpatient: parseInt(e.target.value)})}
+                    >
+                      {[0,1,2,3,4,5,6,7,8].map(n => (
+                        <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2 pt-2">
                 <label className="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider flex items-center gap-2">
                   <FileText className="w-4 h-4" /> Unstructured Clinical Note
                 </label>

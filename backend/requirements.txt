@@ -19,6 +19,8 @@ firebase-admin==6.5.0
 # Data / ML (stubs — real models injected via volume)
 numpy==1.26.4
 scikit-learn==1.4.2
+pandas==2.2.2
+shap==0.45.1
 
 # Vector DB client
 qdrant-client==1.9.1

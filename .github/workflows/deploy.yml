@@ -11,7 +11,7 @@ on:
 # ─────────────────────────────────────────────────────────────
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ayus25/avertcare/avertcare-backend
+  IMAGE_NAME: avert-care/avertcare/avertcare-backend
 
 jobs:
   # ── 1. Lint + Security ──────────────────────────────────────

@@ -25,6 +25,11 @@ class PatientEncounter(BaseModel):
     num_prior_admissions: int = Field(default=0, ge=0, description="Count of admissions in the past 12 months")
     num_medications: int = Field(default=0, ge=0, description="Active medication count at discharge")
     clinical_note: str = Field(..., min_length=10, description="Unstructured discharge summary / clinical note")
+    # Extended clinical fields — populated by the UI dropdowns; used directly by RF_RAG model
+    a1c_result: str = Field(default="None", description="A1C lab result: None, Norm, >7, >8")
+    number_inpatient: int = Field(default=0, ge=0, description="Number of inpatient visits in the prior year")
+    diabetes_med: str = Field(default="No", description="Whether patient is on diabetes medication: Yes or No")
+    gender: str = Field(default="Unknown", description="Patient gender")
 
     @field_validator("primary_diagnosis")
     @classmethod
