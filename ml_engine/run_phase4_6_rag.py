@@ -625,7 +625,7 @@ def run_inference_test(model_path, prep_dest, fn_path, sp_path, winner_key,
 # ─────────────────────────────────────────────────────────────────────────────
 def write_final_report(ablation_results, winner_key, model_path, prep_dest,
                        fn_path, sp_path, uses_rag, inference_prob, inference_pred):
-    report_path = os.path.join(REPORTS_DIR, "phase4_6_final_report.md")
+    report_path = os.path.join(REPORTS_DIR, "final_ml_pipeline_report.md")
 
     display_map = {
         "LR_Tabular": "Logistic Regression — Tabular Only",
