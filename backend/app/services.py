@@ -39,7 +39,11 @@ logger = logging.getLogger(__name__)
 def _get_qdrant_client():
     """Cached Qdrant client — initialised once per process."""
     from qdrant_client import QdrantClient
-    client = QdrantClient(url=settings.QDRANT_URL, timeout=10)
+    client = QdrantClient(
+        url=settings.QDRANT_URL, 
+        api_key=settings.QDRANT_API_KEY if settings.QDRANT_API_KEY else None,
+        timeout=10
+    )
     logger.info("Qdrant client connected to %s", settings.QDRANT_URL)
     return client
 
