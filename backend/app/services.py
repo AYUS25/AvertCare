@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import json
 import logging
-import pandas as pd
-import numpy as np
 from functools import lru_cache
+
+import numpy as np
+import pandas as pd
 
 from app.core.config import settings
 from app.schemas import (
@@ -78,6 +79,7 @@ def _get_ml_artifacts():
     which causes run_prediction to fall back to the deterministic mock.
     """
     import os
+
     import joblib
 
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
