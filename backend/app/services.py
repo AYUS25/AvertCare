@@ -19,6 +19,7 @@ import numpy as np
 from functools import lru_cache
 
 from app.core.config import settings
+from app.note_template import build_discharge_note
 from app.schemas import (
     PatientEncounter,
     PredictResponse,
@@ -66,6 +67,153 @@ def _get_gemini_client():
     return client
 
 
+def _diagnosis_group(text: str) -> str:
+    """Map a free-text diagnosis onto the nine groups used in training."""
+    lowered = (text or "").lower()
+    rules = (
+        ("diabet", "Diabetes"),
+        ("heart", "Circulatory"),
+        ("cardiac", "Circulatory"),
+        ("coronary", "Circulatory"),
+        ("respir", "Respiratory"),
+        ("pneumo", "Respiratory"),
+        ("copd", "Respiratory"),
+        ("kidney", "Genitourinary"),
+        ("renal", "Genitourinary"),
+        ("digest", "Digestive"),
+        ("gastro", "Digestive"),
+        ("liver", "Digestive"),
+        ("cancer", "Neoplasms"),
+        ("neoplasm", "Neoplasms"),
+        ("fracture", "Injury"),
+        ("trauma", "Injury"),
+        ("arthritis", "Musculoskeletal"),
+    )
+    for needle, group in rules:
+        if needle in lowered:
+            return group
+    return "Other"
+
+
+def _a1c(value: str) -> str:
+    if value in {">7", ">8", "Norm", "Not_Tested"}:
+        return value
+    return "Not_Tested"
+
+
+def _model_frame(payload: PatientEncounter) -> pd.DataFrame:
+    """Build the 34 training columns from the clinician payload.
+
+    Fields the UI collects are passed through. Fields the screen does not
+    collect stay at the same safe defaults the preprocessor was fit to accept.
+    """
+    inpatient = int(payload.number_inpatient)
+    diabetes_med = payload.diabetes_med if payload.diabetes_med in {"Yes", "No"} else "No"
+    gender = payload.gender if payload.gender in {"Male", "Female", "Unknown"} else "Unknown"
+    return pd.DataFrame({
+        "age_numeric": [payload.age],
+        "num_lab_procedures": [40],
+        "num_med_changes": [0],
+        "num_medications": [payload.num_medications],
+        "num_meds_active": [1 if diabetes_med == "Yes" else 0],
+        "num_procedures": [0],
+        "number_diagnoses": [1],
+        "number_emergency": [0],
+        "number_inpatient": [inpatient],
+        "number_outpatient": [0],
+        "time_in_hospital": [payload.time_in_hospital],
+        "total_prior_visits": [inpatient],
+        "A1Cresult": [_a1c(payload.a1c_result)],
+        "admission_source_id": ["Other"],
+        "admission_type_id": ["Other"],
+        "change": ["No"],
+        "diabetesMed": [diabetes_med],
+        "diag_1_group": [_diagnosis_group(payload.primary_diagnosis)],
+        "diag_2_group": ["Other"],
+        "diag_3_group": ["Other"],
+        "discharge_disposition_id": ["1"],
+        "gender": [gender],
+        "glimepiride": ["No"],
+        "glipizide": ["No"],
+        "glyburide": ["No"],
+        "insulin": ["No"],
+        "max_glu_serum": ["Not_Tested"],
+        "medical_specialty": ["Unknown"],
+        "metformin": ["No"],
+        "payer_code": ["Unknown"],
+        "pioglitazone": ["No"],
+        "race": ["Unknown"],
+        "repaglinide": ["No"],
+        "rosiglitazone": ["No"],
+    })
+
+
+@lru_cache(maxsize=1)
+def _get_safe_rag_index():
+    """Train-only embedding index. None when the safe index has not been built."""
+    import os
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    models_dir = os.path.join(os.path.dirname(base_dir), "models")
+    index_path = os.path.join(models_dir, "rag_train_index.npz")
+    meta_path = os.path.join(models_dir, "rag_train_meta.csv")
+    if not (os.path.exists(index_path) and os.path.exists(meta_path)):
+        return None
+    loaded = np.load(index_path)
+    embeddings = loaded["embeddings"].astype(np.float32)
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    embeddings = embeddings / np.clip(norms, 1e-8, None)
+    labels = loaded["labels"].astype(np.float32)
+    meta = pd.read_csv(meta_path)
+    logger.info("Loaded leakage-safe RAG index (%d training encounters).", len(labels))
+    return embeddings, labels, meta
+
+
+def _rag_k(meta: dict | None) -> int:
+    if not meta:
+        return 10
+    try:
+        return int(meta.get("rag_k") or 10)
+    except (TypeError, ValueError):
+        return 10
+
+
+def _safe_rag_retrieval(payload: PatientEncounter, k: int) -> TwinPatientResponse | None:
+    """Neighborhood rate and twins from the training index only."""
+    index = _get_safe_rag_index()
+    if index is None:
+        return None
+    embeddings, labels, meta = index
+    note = build_discharge_note(_model_frame(payload).iloc[0].to_dict())
+    query = _get_embedding_model().encode(note, normalize_embeddings=True).astype(np.float32)
+    sims = embeddings @ query
+    k = max(1, min(int(k), len(labels)))
+    chosen = np.argpartition(-sims, k - 1)[:k]
+    chosen = chosen[np.argsort(-sims[chosen])]
+    rate = round(float(labels[chosen].mean()), 4)
+    snri = round(min((rate + 0.15) * 0.9, 1.0), 4)
+    twins = []
+    for idx in chosen[: settings.RAG_TOP_K]:
+        row = meta.iloc[int(idx)]
+        interventions = [part.strip() for part in str(row.get("interventions", "")).split("|") if part.strip()]
+        score = float(min(max(sims[idx], 0.0), 1.0))
+        twins.append(TwinPatient(
+            twin_id=str(int(row["encounter_id"])),
+            age=int(float(row["age"])),
+            primary_diagnosis=str(row["primary_diagnosis"]),
+            similarity_score=round(score, 4),
+            was_readmitted=bool(int(row["readmitted_binary"])),
+            successful_interventions=interventions,
+        ))
+    return TwinPatientResponse(
+        patient_id=payload.patient_id,
+        rag_readmission_rate=rate,
+        semantic_neighborhood_risk_index=snri,
+        sdoh_flag=_extract_sdoh_flags(payload.clinical_note)[0],
+        twins=twins,
+    )
+
+
 # ─────────────────────────────────────────────────────────────
 # Predict Service
 # ─────────────────────────────────────────────────────────────
@@ -91,8 +239,12 @@ def _get_ml_artifacts():
         logger.warning("ML model artifacts not found at %s — using deterministic mock.", MODELS_DIR)
         return None
 
-    model = joblib.load(model_path)
-    preprocessor = joblib.load(prep_path)
+    try:
+        model = joblib.load(model_path)
+        preprocessor = joblib.load(prep_path)
+    except Exception as exc:
+        logger.warning("ML artifacts failed to load (%s) — using deterministic mock.", exc)
+        return None
     if isinstance(preprocessor, dict):
         preprocessor = preprocessor["preprocessor"]
 
@@ -154,59 +306,31 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
     prep = artifacts["preprocessor"]
     meta = artifacts["meta"]
 
-    # 1. Run RAG retrieval to get the readmit rate (if live)
+    # 1. Same 34-column row the preprocessor was fit on, then leakage-safe neighbors.
+    frame = _model_frame(payload)
     rag_response = run_rag_retrieval(payload)
     rag_rate = rag_response.rag_readmission_rate
 
-    # 2. Construct raw pandas DataFrame matching preprocessor's expected columns
-    data = {
-        'age_numeric': [payload.age],
-        'num_lab_procedures': [40],
-        'num_med_changes': [0],
-        'num_medications': [payload.num_medications],
-        'num_meds_active': [payload.num_medications],
-        'num_procedures': [0],
-        'number_diagnoses': [1],
-        'number_emergency': [0],
-        'number_inpatient': [payload.num_prior_admissions],
-        'number_outpatient': [0],
-        'time_in_hospital': [payload.time_in_hospital],
-        'total_prior_visits': [payload.num_prior_admissions],
-        'A1Cresult': ['Not_Tested'],
-        'admission_source_id': ['Other'],
-        'admission_type_id': ['Other'],
-        'change': ['No'],
-        'diabetesMed': ['No'],
-        'diag_1_group': ['Other'],
-        'diag_2_group': ['Other'],
-        'diag_3_group': ['Other'],
-        'discharge_disposition_id': ['1'],
-        'gender': ['Unknown'],
-        'glimepiride': ['No'],
-        'glipizide': ['No'],
-        'glyburide': ['No'],
-        'insulin': ['No'],
-        'max_glu_serum': ['Not_Tested'],
-        'medical_specialty': ['Unknown'],
-        'metformin': ['No'],
-        'payer_code': ['Unknown'],
-        'pioglitazone': ['No'],
-        'race': ['Unknown'],
-        'repaglinide': ['No'],
-        'rosiglitazone': ['No']
-    }
-    df = pd.DataFrame(data)
-
-    # 3. Transform and append RAG feature
-    X_tab = prep.transform(df)
-    X_input = np.hstack([X_tab, np.array([[rag_rate]])]) if meta["uses_rag"] else X_tab
+    # 2. Transform and append the neighborhood rate when the exported model uses it.
+    X_tab = prep.transform(frame)
+    if hasattr(X_tab, "toarray"):
+        X_tab = X_tab.toarray()
+    X_input = np.hstack([X_tab, np.array([[rag_rate]], dtype=float)]) if meta.get("uses_rag") else np.asarray(X_tab)
 
     # 4. Predict probability
     raw_score = float(model.predict_proba(X_input)[:, 1][0])
 
+    # F1-optimal cutoffs near 0.12 belong to calibrated scores (base rate ~11%).
+    # Using that cutoff as "high risk" would flag about a third of discharges.
+    # High is the top of the score range (~2x base rate); moderate is above the F1 cut.
+    f1_cut = float(meta.get("decision_threshold") or 0.65)
+    if f1_cut >= 0.40:
+        high_cut, moderate_cut = f1_cut, min(0.40, f1_cut)
+    else:
+        high_cut, moderate_cut = 0.20, f1_cut
     risk_category = (
-        RiskCategory.HIGH if raw_score >= 0.65
-        else RiskCategory.MODERATE if raw_score >= 0.40
+        RiskCategory.HIGH if raw_score >= high_cut
+        else RiskCategory.MODERATE if raw_score >= moderate_cut
         else RiskCategory.LOW
     )
 
@@ -217,7 +341,11 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
         explainer = shap_lib.TreeExplainer(model)
         shap_values = explainer.shap_values(X_input)
         sv = shap_values[1] if isinstance(shap_values, list) else shap_values
-        sv = sv[0]
+        sv = np.asarray(sv)
+        if sv.ndim == 3:
+            sv = sv[0, :, 1]
+        elif sv.ndim == 2:
+            sv = sv[0]
         feature_names = meta["feature_names"]
         all_shap = [
             SHAPFeature(feature=feature_names[i], impact=round(float(sv[i]), 4))
@@ -229,10 +357,16 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
         logger.warning("SHAP explanation failed (%s); returning empty list.", exc)
 
     sdoh_flags = _extract_sdoh_flags(payload.clinical_note)
+    twin_interventions: list[str] = []
+    for twin in rag_response.twins:
+        if not twin.was_readmitted:
+            for item in twin.successful_interventions:
+                if item not in twin_interventions:
+                    twin_interventions.append(item)
 
     # 6. Care plan
     care_plan = (
-        _generate_llm_care_plan(raw_score, sdoh_flags, shap_features)
+        _generate_llm_care_plan(raw_score, sdoh_flags, shap_features, twin_interventions)
         if settings.LIVE_LLM_ENABLED
         else _generate_rule_care_plan(risk_category, sdoh_flags)
     )
@@ -257,10 +391,14 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
 
 def run_rag_retrieval(payload: PatientEncounter) -> TwinPatientResponse:
     """
-    LIVE_RAG_ENABLED=True  → embeds clinical_note, queries Qdrant,
-                              computes real RAGrisk index.
-    LIVE_RAG_ENABLED=False → deterministic mock cohort.
+    Prefer the leakage-safe training index. Fall back to live Qdrant, then
+    to the deterministic mock cohort.
     """
+    artifacts = _get_ml_artifacts()
+    meta = artifacts["meta"] if artifacts else {}
+    safe = _safe_rag_retrieval(payload, _rag_k(meta))
+    if safe is not None:
+        return safe
     if settings.LIVE_RAG_ENABLED:
         return _live_rag_retrieval(payload)
     return _mock_rag_retrieval(payload)
@@ -300,7 +438,7 @@ def _live_rag_retrieval(payload: PatientEncounter) -> TwinPatientResponse:
 
     readmitted_count = sum(1 for t in twins if t.was_readmitted)
     rag_rate = round(readmitted_count / max(len(twins), 1), 4)
-    snri = round((rag_rate + 0.15) * 0.9, 4)
+    snri = round(min((rag_rate + 0.15) * 0.9, 1.0), 4)
 
     return TwinPatientResponse(
         patient_id=payload.patient_id,
@@ -347,7 +485,7 @@ def _mock_rag_retrieval(payload: PatientEncounter) -> TwinPatientResponse:
     ]
     readmitted_count = sum(1 for t in twins if t.was_readmitted)
     rag_rate = round(readmitted_count / len(twins), 4)
-    snri = round((rag_rate + 0.15) * 0.9, 4)
+    snri = round(min((rag_rate + 0.15) * 0.9, 1.0), 4)
 
     return TwinPatientResponse(
         patient_id=payload.patient_id,
@@ -367,7 +505,7 @@ You are an expert hospital discharge planner and clinical decision support speci
 You will receive structured JSON containing:
   - patient_risk_score: float [0,1] — readmission probability
   - sdoh_flags: list[str] — Social Determinants of Health barriers
-  - top_shap_features: list[{feature, impact}] — top XGBoost risk drivers
+  - top_shap_features: list[{feature, impact}] — top risk-model drivers
   - twin_interventions: list[str] — successful interventions from similar non-readmitted patients
 
 Your task: Generate a concise, evidence-based 3-point prescriptive discharge plan.
@@ -389,19 +527,21 @@ def _generate_llm_care_plan(
     risk_score: float,
     sdoh_flags: list[str],
     shap_features: list[SHAPFeature],
+    twin_interventions: list[str] | None = None,
 ) -> list[str]:
     """Call Gemini API to synthesise a prescriptive care plan."""
     try:
         client = _get_gemini_client()
+        interventions = twin_interventions or [
+            "72-hr telehealth follow-up",
+            "Pharmacist medication reconciliation",
+            "Home nursing referral",
+        ]
         user_payload = json.dumps({
             "patient_risk_score": risk_score,
             "sdoh_flags": sdoh_flags,
             "top_shap_features": [{"feature": f.feature, "impact": f.impact} for f in shap_features[:3]],
-            "twin_interventions": [
-                "72-hr telehealth follow-up",
-                "Pharmacist medication reconciliation",
-                "Home nursing referral",
-            ],
+            "twin_interventions": interventions,
         })
 
         response = client.models.generate_content(

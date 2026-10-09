@@ -35,7 +35,7 @@ class Settings(BaseSettings):
 
     # ── LLM ─────────────────────────────────────────────────
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-2.0-flash"
+    GEMINI_MODEL: str = "gemini-3.8-flash"
 
     # ── Feature flags ────────────────────────────────────────
     # Flip to True once Qdrant is seeded. Falls back to mock if False.

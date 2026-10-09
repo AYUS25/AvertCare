@@ -80,9 +80,9 @@ def generate_clinical_note(row: pd.Series) -> str:
     Synthesise a realistic, structured clinical discharge summary
     from tabular row fields. Injects a random SDoH clause.
     """
-    readmit_label = "has a history of inpatient readmission" if row.get("readmitted_binary", 0) == 1 \
-        else "has no recent inpatient readmissions"
-
+    # Outcome text is intentionally absent. readmitted_binary must not appear
+    # in the embedded note. The leakage-safe feature builder is
+    # scripts/build_leakage_safe_rag.py.
     medication_status = "medication regimen changed during this admission" \
         if str(row.get("change", "No")).lower() == "ch" \
         else "no significant medication changes during this admission"
@@ -96,7 +96,6 @@ def generate_clinical_note(row: pd.Series) -> str:
         f"Number of inpatient visits in the past year: {int(row.get('number_inpatient', 0))}. "
         f"Number of emergency visits: {int(row.get('number_emergency', 0))}. "
         f"Active medications at discharge: {int(row.get('num_medications', 1))}. "
-        f"The patient {readmit_label}. "
         f"The {medication_status}. "
         f"{sdoh}"
     )
