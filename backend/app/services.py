@@ -77,8 +77,8 @@ def _get_ml_artifacts():
     Returns None if artifacts are not present (e.g., in CI or before M1 handoff),
     which causes run_prediction to fall back to the deterministic mock.
     """
-    import joblib
     import os
+    import joblib
 
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     MODELS_DIR = os.path.join(os.path.dirname(BASE_DIR), "models")
