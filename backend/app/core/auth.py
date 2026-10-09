@@ -53,7 +53,7 @@ async def require_auth(
     if creds is None or not creds.credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Firebase ID token. Send: Authorization: Bearer <token>",
+            detail="Sign in again. The login is missing or expired.",
         )
 
     _init_firebase()
@@ -63,5 +63,5 @@ async def require_auth(
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid Firebase token: {exc}",
+            detail="Sign in again. The login is missing or expired.",
         ) from exc

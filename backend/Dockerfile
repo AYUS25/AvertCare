@@ -22,9 +22,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Dependency layer — cached unless requirements.txt changes
+# Dependency layer — cached unless requirements.txt changes.
+# Install the CPU build of torch first. sentence-transformers would otherwise
+# pull the default CUDA wheels (several gigabytes) and the image would not
+# fit a demo machine.
 COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+RUN pip install --no-cache-dir --user --index-url https://download.pytorch.org/whl/cpu "torch==2.5.1" \
+ && pip install --no-cache-dir --user -r requirements.txt
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -50,5 +54,7 @@ ENV PATH=/root/.local/bin:$PATH
 
 EXPOSE 8000
 
-# 2 workers for production; override per-env as needed
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+# One worker so /metrics and the request counters live in the same process.
+# Multiple workers each keep a private registry, and Prometheus would scrape
+# an empty or partial set of charts.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

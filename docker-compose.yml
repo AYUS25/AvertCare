@@ -46,8 +46,8 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 20s
       timeout: 5s
-      retries: 5
-      start_period: 30s
+      retries: 8
+      start_period: 90s
 
   # ── Next.js Clinical Dashboard ───────────────────────────────────────────────
   frontend:
@@ -124,10 +124,17 @@ services:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.retention.time=7d"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - avertcare-net
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # ── Grafana (IT Ops Dashboard) ────────────────────────────────────────────────
   grafana:
@@ -145,7 +152,8 @@ services:
       - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
       - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_healthy
     networks:
       - avertcare-net
     restart: unless-stopped

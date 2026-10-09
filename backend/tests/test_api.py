@@ -71,7 +71,15 @@ class TestPredictEndpoint:
 
     def test_care_plan_present(self):
         r = client.post("/api/predict", json=SAMPLE_PAYLOAD)
-        assert len(r.json()["care_plan"]) > 0
+        body = r.json()
+        assert 1 <= len(body["care_plan"]) <= 3
+        assert body["plan_source"] in {"rules", "gemini"}
+        assert isinstance(body["clinical_rationale"], str) and body["clinical_rationale"]
+
+    def test_short_note_returns_422(self):
+        payload = {**SAMPLE_PAYLOAD, "clinical_note": "too short"}
+        r = client.post("/api/predict", json=payload)
+        assert r.status_code == 422
 
     def test_invalid_payload_returns_422(self):
         r = client.post("/api/predict", json={"age": -1})  # missing required fields
@@ -93,6 +101,6 @@ class TestTwinPatientEndpoint:
         rate = r.json()["rag_readmission_rate"]
         assert 0.0 <= rate <= 1.0
 
-    def test_snri_present(self):
+    def test_diagnosis_group_present(self):
         r = client.post("/api/twin-patients", json=SAMPLE_PAYLOAD)
-        assert "semantic_neighborhood_risk_index" in r.json()
+        assert r.json()["twins"][0]["diagnosis_group"]

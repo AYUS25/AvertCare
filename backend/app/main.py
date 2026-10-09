@@ -53,10 +53,17 @@ def create_app() -> FastAPI:
     )
 
     # ── Prometheus ───────────────────────────────────────────
-    # Skip probes and the scrape endpoint so the demo charts show clinical traffic.
+    # Paths are regular expressions. A bare "/" would match every route.
     Instrumentator(
         should_group_status_codes=False,
-        excluded_handlers=["/metrics", "/health", "/", "/docs", "/redoc", "/openapi.json"],
+        excluded_handlers=[
+            "^/metrics$",
+            "^/health$",
+            "^/$",
+            "^/docs$",
+            "^/redoc$",
+            "^/openapi.json$",
+        ],
     ).add(_record_request).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
     # ── Routes ───────────────────────────────────────────────
