@@ -102,6 +102,13 @@ def _a1c(value: str) -> str:
     return "Not_Tested"
 
 
+_DISPOSITIONS = {"1", "2", "3", "4", "5", "6", "7", "18", "22", "25", "Other"}
+_DIAG_GROUPS = {
+    "Circulatory", "Respiratory", "Digestive", "Genitourinary",
+    "Neoplasms", "Musculoskeletal", "Injury", "Diabetes", "Other",
+}
+
+
 def _model_frame(payload: PatientEncounter) -> pd.DataFrame:
     """Build the 34 training columns from the clinician payload.
 
@@ -109,8 +116,11 @@ def _model_frame(payload: PatientEncounter) -> pd.DataFrame:
     collect stay at the same safe defaults the preprocessor was fit to accept.
     """
     inpatient = int(payload.number_inpatient)
+    emergency = int(payload.number_emergency)
     diabetes_med = payload.diabetes_med if payload.diabetes_med in {"Yes", "No"} else "No"
     gender = payload.gender if payload.gender in {"Male", "Female", "Unknown"} else "Unknown"
+    disposition = payload.discharge_disposition if payload.discharge_disposition in _DISPOSITIONS else "Other"
+    diag_group = payload.diag_1_group if payload.diag_1_group in _DIAG_GROUPS else _diagnosis_group(payload.primary_diagnosis)
     return pd.DataFrame({
         "age_numeric": [payload.age],
         "num_lab_procedures": [40],
@@ -118,21 +128,21 @@ def _model_frame(payload: PatientEncounter) -> pd.DataFrame:
         "num_medications": [payload.num_medications],
         "num_meds_active": [1 if diabetes_med == "Yes" else 0],
         "num_procedures": [0],
-        "number_diagnoses": [1],
-        "number_emergency": [0],
+        "number_diagnoses": [int(payload.number_diagnoses)],
+        "number_emergency": [emergency],
         "number_inpatient": [inpatient],
         "number_outpatient": [0],
         "time_in_hospital": [payload.time_in_hospital],
-        "total_prior_visits": [inpatient],
+        "total_prior_visits": [inpatient + emergency],
         "A1Cresult": [_a1c(payload.a1c_result)],
         "admission_source_id": ["Other"],
         "admission_type_id": ["Other"],
         "change": ["No"],
         "diabetesMed": [diabetes_med],
-        "diag_1_group": [_diagnosis_group(payload.primary_diagnosis)],
+        "diag_1_group": [diag_group],
         "diag_2_group": ["Other"],
         "diag_3_group": ["Other"],
-        "discharge_disposition_id": ["1"],
+        "discharge_disposition_id": [disposition],
         "gender": [gender],
         "glimepiride": ["No"],
         "glipizide": ["No"],
@@ -349,10 +359,13 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
         elif sv.ndim == 2:
             sv = sv[0]
         feature_names = meta["feature_names"]
-        all_shap = [
-            SHAPFeature(feature=feature_names[i], impact=round(float(sv[i]), 4))
-            for i in range(len(feature_names))
-        ]
+        row = np.asarray(X_input)[0]
+        all_shap = []
+        for i in range(len(feature_names)):
+            # A zero one-hot column is an option the clinician did not select.
+            if feature_names[i].startswith("cat__") and float(row[i]) == 0.0:
+                continue
+            all_shap.append(SHAPFeature(feature=feature_names[i], impact=round(float(sv[i]), 4)))
         all_shap.sort(key=lambda x: abs(x.impact), reverse=True)
         shap_features = all_shap[:5]
     except Exception as exc:

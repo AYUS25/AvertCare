@@ -1,0 +1,191 @@
+{
+  "uid": "avertcare-mlops",
+  "title": "AvertCare Clinical Ops",
+  "description": "Live API health for the discharge-risk service: throughput, inference latency, and blocked versus successful requests.",
+  "tags": ["avertcare", "mlops", "clinical-ops"],
+  "schemaVersion": 39,
+  "refresh": "5s",
+  "timezone": "browser",
+  "editable": true,
+  "graphTooltip": 1,
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Requests Per Second",
+      "description": "Clinical API calls per second, excluding health probes and the metrics scrape.",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(fastapi_requests_total[1m]))",
+          "legendFormat": "RPS"
+        }
+      ],
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 2,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "steps": [{ "value": null, "color": "green" }, { "value": 5, "color": "yellow" }, { "value": 20, "color": "red" }] }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "gauge",
+      "title": "P95 Latency",
+      "description": "95th percentile request time. The discharge plan should stay interactive.",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum(rate(fastapi_requests_duration_seconds_bucket[1m])) by (le)) * 1000",
+          "legendFormat": "P95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "max": 2000,
+          "thresholds": { "steps": [{ "value": null, "color": "green" }, { "value": 500, "color": "yellow" }, { "value": 1000, "color": "red" }] }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "gauge",
+      "title": "P99 Latency",
+      "description": "99th percentile request time, including slow model or assistant calls.",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99, sum(rate(fastapi_requests_duration_seconds_bucket[1m])) by (le)) * 1000",
+          "legendFormat": "P99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "max": 5000,
+          "thresholds": { "steps": [{ "value": null, "color": "green" }, { "value": 1000, "color": "yellow" }, { "value": 2500, "color": "red" }] }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "API Up",
+      "description": "Prometheus can reach the backend metrics endpoint.",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{job=\"avertcare-backend\"}",
+          "legendFormat": "up"
+        }
+      ],
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "Down", "color": "red" }, "1": { "text": "Up", "color": "green" } } }
+          ],
+          "thresholds": { "steps": [{ "value": null, "color": "red" }, { "value": 1, "color": "green" }] }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Inference Latency (P50 / P95 / P99)",
+      "gridPos": { "h": 9, "w": 14, "x": 0, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum(rate(fastapi_requests_duration_seconds_bucket[1m])) by (le)) * 1000", "legendFormat": "P50" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum(rate(fastapi_requests_duration_seconds_bucket[1m])) by (le)) * 1000", "legendFormat": "P95" },
+        { "refId": "C", "expr": "histogram_quantile(0.99, sum(rate(fastapi_requests_duration_seconds_bucket[1m])) by (le)) * 1000", "legendFormat": "P99" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "drawStyle": "line", "fillOpacity": 12, "lineWidth": 2, "showPoints": "never", "spanNulls": true }
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "piechart",
+      "title": "HTTP Status Mix",
+      "description": "Successful predictions versus blocked or failed calls. A 401 means the Firebase token was missing or rejected.",
+      "gridPos": { "h": 9, "w": 10, "x": 14, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(fastapi_requests_total[1m])) by (status)",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "options": {
+        "pieType": "donut",
+        "displayLabels": ["name", "percent"],
+        "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] },
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "tooltip": { "mode": "single" }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Successful Calls vs Errors",
+      "gridPos": { "h": 8, "w": 14, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(fastapi_requests_total{status=~\"2..\"}[1m]))", "legendFormat": "2xx success" },
+        { "refId": "B", "expr": "sum(rate(fastapi_requests_total{status=~\"4..|5..\"}[1m]))", "legendFormat": "4xx/5xx errors" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2, "showPoints": "never", "spanNulls": true }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "2xx success" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+          { "matcher": { "id": "byName", "options": "4xx/5xx errors" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "type": "bargauge",
+      "title": "Error Rate by Status",
+      "description": "4xx and 5xx responses per second, split by status code.",
+      "gridPos": { "h": 8, "w": 10, "x": 14, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(fastapi_requests_total{status=~\"4..|5..\"}[1m])) by (status)",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "options": { "displayMode": "gradient", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] }, "showUnfilled": true },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "thresholds": { "steps": [{ "value": null, "color": "yellow" }, { "value": 1, "color": "red" }] }
+        }
+      }
+    }
+  ]
+}
