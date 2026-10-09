@@ -687,6 +687,10 @@ def write_final_report(ablation_results, winner_key, model_path, prep_dest,
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
+    raise SystemExit(
+        "This entry point joined the leaked data/processed/train_with_rag.csv file. "
+        "Run python ml_engine/run_safe_ablation.py instead."
+    )
     print("=" * 72)
     print("AVERTCARE ML ENGINE — PHASE 4–6: RAG ABLATION + SHAP + BACKEND")
     print("=" * 72)

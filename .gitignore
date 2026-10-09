@@ -13,6 +13,7 @@ venv/
 # ML artefacts (mounted via Docker volume — not tracked)
 ml_engine/models/*.pkl
 ml_engine/models/*.pt
+data/processed/rag_safe_cache/
 
 # Docker
 .dockerignore

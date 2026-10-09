@@ -26,7 +26,69 @@ type PatientEncounter = {
   num_prior_admissions: number;
   num_medications: number;
   clinical_note: string;
+  // Extended clinical fields for richer ML inference
+  a1c_result: "None" | ">7" | ">8" | "Norm";
+  number_inpatient: number;
+  number_emergency: number;
+  number_diagnoses: number;
+  diabetes_med: "Yes" | "No";
+  gender: "Male" | "Female" | "Unknown";
+  discharge_disposition: string;
+  diag_1_group: string;
 };
+
+const DIAG_GROUPS = [
+  "Diabetes",
+  "Circulatory",
+  "Respiratory",
+  "Digestive",
+  "Genitourinary",
+  "Neoplasms",
+  "Musculoskeletal",
+  "Injury",
+  "Other",
+] as const;
+
+const DISCHARGE_OPTIONS = [
+  { value: "1", label: "Home" },
+  { value: "6", label: "Home with home health" },
+  { value: "3", label: "Skilled nursing facility" },
+  { value: "4", label: "Intermediate care" },
+  { value: "22", label: "Rehab facility" },
+  { value: "2", label: "Another short-term hospital" },
+  { value: "5", label: "Other inpatient facility" },
+  { value: "7", label: "Left against medical advice" },
+  { value: "Other", label: "Other / not listed" },
+] as const;
+
+function shapLabel(feature: string): string {
+  const named: Record<string, string> = {
+    "num__number_inpatient": "Prior inpatient visits",
+    "num__total_prior_visits": "Total prior visits",
+    "num__number_emergency": "Emergency visits",
+    "num__number_diagnoses": "Diagnosis count",
+    "num__time_in_hospital": "Length of stay",
+    "num__age_numeric": "Age",
+    "num__num_medications": "Medication count",
+    "num__num_meds_active": "Active diabetes meds",
+    "num__num_lab_procedures": "Lab procedures",
+    "rag_readmit_rate": "Similar-patient readmit rate",
+    "cat__discharge_disposition_id_1": "Discharged home",
+    "cat__discharge_disposition_id_2": "Transferred to another hospital",
+    "cat__discharge_disposition_id_3": "Discharged to skilled nursing",
+    "cat__discharge_disposition_id_4": "Discharged to intermediate care",
+    "cat__discharge_disposition_id_5": "Discharged to other inpatient care",
+    "cat__discharge_disposition_id_6": "Home with home health",
+    "cat__discharge_disposition_id_7": "Left against medical advice",
+    "cat__discharge_disposition_id_22": "Discharged to rehab",
+    "cat__discharge_disposition_id_Other": "Other discharge destination",
+    "cat__diag_1_group_Diabetes": "Primary diagnosis: diabetes",
+    "cat__diag_1_group_Circulatory": "Primary diagnosis: circulatory",
+    "cat__diag_1_group_Respiratory": "Primary diagnosis: respiratory",
+    "cat__payer_code_Unknown": "Payer unknown",
+  };
+  return named[feature] ?? feature.replace(/^num__|^cat__/, "").replaceAll("_", " ");
+}
 
 type SHAPFeature = {
   feature: string;
@@ -69,7 +131,16 @@ const MOCK_PATIENT: PatientEncounter = {
   num_prior_admissions: 2,
   num_medications: 8,
   clinical_note: "Patient lives alone and has expressed concerns about inability to afford insulin. Polypharmacy noted. Blood glucose stabilizing. Discharge planned for tomorrow. Transport home is currently unarranged.",
+  a1c_result: ">8",
+  number_inpatient: 2,
+  number_emergency: 0,
+  number_diagnoses: 5,
+  diabetes_med: "Yes",
+  gender: "Female",
+  discharge_disposition: "1",
+  diag_1_group: "Diabetes",
 };
+
 
 export default function Dashboard() {
   const [patient, setPatient] = useState<PatientEncounter>(MOCK_PATIENT);
@@ -198,6 +269,122 @@ export default function Dashboard() {
               </div>
 
               <div className="space-y-2 pt-4">
+                <label className="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">
+                  Clinical Lab & Medication Profile
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+
+                  {/* A1C Result */}
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">A1C Result</label>
+                    <select
+                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      value={patient.a1c_result}
+                      onChange={(e) => setPatient({...patient, a1c_result: e.target.value as PatientEncounter["a1c_result"]})}
+                    >
+                      <option value="None">Not Tested</option>
+                      <option value="Norm">Normal (&lt;7)</option>
+                      <option value=">7">High (&gt;7)</option>
+                      <option value=">8">Very High (&gt;8)</option>
+                    </select>
+                  </div>
+
+                  {/* Gender */}
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Gender</label>
+                    <select
+                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      value={patient.gender}
+                      onChange={(e) => setPatient({...patient, gender: e.target.value as PatientEncounter["gender"]})}
+                    >
+                      <option value="Male">Male</option>
+                      <option value="Female">Female</option>
+                      <option value="Unknown">Unknown</option>
+                    </select>
+                  </div>
+
+                  {/* Diabetes Meds */}
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Diabetes Meds</label>
+                    <select
+                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      value={patient.diabetes_med}
+                      onChange={(e) => setPatient({...patient, diabetes_med: e.target.value as "Yes" | "No"})}
+                    >
+                      <option value="Yes">Yes</option>
+                      <option value="No">No</option>
+                    </select>
+                  </div>
+
+                  {/* Number of Inpatient Visits */}
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Inpatient Visits (1yr)</label>
+                    <select
+                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      value={patient.number_inpatient}
+                      onChange={(e) => setPatient({...patient, number_inpatient: parseInt(e.target.value)})}
+                    >
+                      {[0,1,2,3,4,5,6,7,8].map(n => (
+                        <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Emergency Visits (1yr)</label>
+                    <select
+                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      value={patient.number_emergency}
+                      onChange={(e) => setPatient({...patient, number_emergency: parseInt(e.target.value)})}
+                    >
+                      {[0,1,2,3,4,5,6,7,8].map(n => (
+                        <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Diagnosis Count</label>
+                    <select
+                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      value={patient.number_diagnoses}
+                      onChange={(e) => setPatient({...patient, number_diagnoses: parseInt(e.target.value)})}
+                    >
+                      {[1,2,3,4,5,6,7,8,9].map(n => (
+                        <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1 col-span-2">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Discharge Destination</label>
+                    <select
+                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      value={patient.discharge_disposition}
+                      onChange={(e) => setPatient({...patient, discharge_disposition: e.target.value})}
+                    >
+                      {DISCHARGE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1 col-span-2">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Primary Diagnosis Group</label>
+                    <select
+                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      value={patient.diag_1_group}
+                      onChange={(e) => setPatient({...patient, diag_1_group: e.target.value})}
+                    >
+                      {DIAG_GROUPS.map((group) => (
+                        <option key={group} value={group}>{group}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2 pt-2">
                 <label className="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider flex items-center gap-2">
                   <FileText className="w-4 h-4" /> Unstructured Clinical Note
                 </label>
@@ -358,8 +545,8 @@ export default function Dashboard() {
                 <div className="space-y-4">
                   {predictData.shap_features.map((feat) => (
                     <div key={feat.feature} className="flex items-center gap-4">
-                      <div className="w-1/4 text-sm text-[hsl(var(--muted-foreground))] text-right truncate">
-                        {feat.feature}
+                      <div className="w-1/4 text-sm text-[hsl(var(--muted-foreground))] text-right truncate" title={feat.feature}>
+                        {shapLabel(feat.feature)}
                       </div>
                       <div className="flex-1 h-3 bg-[hsl(var(--muted))] rounded-full overflow-hidden flex">
                         {/* Visualization trick: positive impacts push right, negative push left. Simplified for UI. */}

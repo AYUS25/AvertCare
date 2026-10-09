@@ -148,5 +148,8 @@
   ],
   "uses_rag": true,
   "rag_feature_column": "rag_readmit_rate",
-  "winning_model": "RF_RAG"
+  "rag_k": 10,
+  "decision_threshold": 0.12,
+  "winning_model": "XGBClassifier",
+  "leakage_safe": true
 }

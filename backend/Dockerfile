@@ -41,11 +41,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 # Copy installed packages from builder
 COPY --from=builder /root/.local /root/.local
 
-# Copy application source
+# Copy application source and ML models
 COPY app/ ./app/
-
-# Create the models directory — it will be populated by the volume mount
-RUN mkdir -p /app/models
+COPY models/ ./models/
 
 # PATH for pip --user installs
 ENV PATH=/root/.local/bin:$PATH

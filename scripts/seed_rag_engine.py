@@ -95,9 +95,11 @@ def generate_clinical_note(row: pd.Series) -> str:
     STRICTLY LEAKAGE-FREE: Uses ONLY features available at prediction time.
     NO references to readmitted or readmitted_binary.
     """
-    medication_status = (
-        "medication regimen changed during this admission"
-        if str(row.get("change", "No")).lower() in ["ch", "change"]
+    # Outcome text is intentionally absent. readmitted_binary must not appear
+    # in the embedded note. The leakage-safe feature builder is
+    # scripts/build_leakage_safe_rag.py.
+    medication_status = "medication regimen changed during this admission" \
+        if str(row.get("change", "No")).lower() == "ch" \
         else "no significant medication changes during this admission"
     )
 
@@ -207,24 +209,8 @@ def patient_level_split(df: pd.DataFrame, train_ratio=0.8, val_ratio=0.1, test_r
 # 4. Leakage-Safe Vectorized RAG Neighbor Search & Rate Computation
 # ─────────────────────────────────────────────────────────────
 
-def compute_leakage_free_rag_rate(
-    query_embeddings: np.ndarray,
-    query_df: pd.DataFrame,
-    ref_embeddings: np.ndarray,
-    ref_df: pd.DataFrame,
-    is_train: bool = False,
-    k: int = RAG_K,
-    client: QdrantClient | None = None,
-    use_qdrant_server: bool = False,
-) -> list[float]:
-    """
-    Computes RAG readmit rate for query records using reference embeddings/payloads.
-    - Vectorized matrix dot product for ultra-fast performance.
-    - Filters out the query encounter itself and any reference record with matching patient_id.
-    - Reference set contains ONLY Training split records.
-    """
-    rag_risks = []
-    global_mean_rate = float(ref_df["readmitted_binary"].mean())
+def run(csv_path: Path, qdrant_url: str, limit: int, api_key: str = "") -> None:
+    print("\n=== AvertCare · RAG Seeding Pipeline ===\n")
 
     if use_qdrant_server and client is not None:
         for idx in tqdm(range(len(query_df)), desc="Querying Qdrant"):
@@ -327,14 +313,10 @@ def run(csv_path: Path, qdrant_url: str, limit: int, output_dir: Path) -> None:
         normalize_embeddings=True,
     )
 
-    print("🔢 Embedding Validation clinical notes…")
-    val_embeddings = embed_model.encode(
-        df_val["clinical_note"].tolist(),
-        batch_size=BATCH_SIZE,
-        show_progress_bar=True,
-        convert_to_numpy=True,
-        normalize_embeddings=True,
-    )
+    # Connect to Qdrant
+    print(f"\n📡 Connecting to Qdrant at {qdrant_url}…")
+    client = QdrantClient(url=qdrant_url, api_key=api_key if api_key else None, timeout=60)
+    initialise_collection(client)
 
     print("🔢 Embedding Test clinical notes…")
     test_embeddings = embed_model.encode(
@@ -455,6 +437,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AvertCare Leakage-Free RAG Seeding Pipeline")
     parser.add_argument("--csv", type=Path, default=Path("data/raw/diabetic_data.csv"))
     parser.add_argument("--qdrant", type=str, default="http://localhost:6333")
+    parser.add_argument("--api-key", type=str, default="", help="Qdrant Cloud API Key")
     parser.add_argument("--limit", type=int, default=10_000, help="Row limit (0 = all)")
     parser.add_argument("--output_dir", type=Path, default=Path("data/processed"))
     args = parser.parse_args()
@@ -466,4 +449,4 @@ if __name__ == "__main__":
             "   Place as: data/raw/diabetic_data.csv\n"
         )
 
-    run(args.csv, args.qdrant, args.limit, args.output_dir)
+    run(args.csv, args.qdrant, args.limit, args.api_key)

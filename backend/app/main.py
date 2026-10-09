@@ -10,10 +10,29 @@ Startup order:
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import Counter, Histogram
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.api.routes import router
 from app.core.config import settings
+
+# Names match the Clinical Ops PromQL (fastapi_requests_*).
+_REQUESTS = Counter(
+    "fastapi_requests_total",
+    "HTTP requests served by the AvertCare API.",
+    labelnames=("method", "handler", "status"),
+)
+_LATENCY = Histogram(
+    "fastapi_requests_duration_seconds",
+    "HTTP request latency in seconds.",
+    labelnames=("method", "handler"),
+    buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10),
+)
+
+
+def _record_request(info) -> None:
+    _REQUESTS.labels(info.method, info.modified_handler, info.modified_status).inc()
+    _LATENCY.labels(info.method, info.modified_handler).observe(info.modified_duration)
 
 
 def create_app() -> FastAPI:
@@ -34,7 +53,11 @@ def create_app() -> FastAPI:
     )
 
     # ── Prometheus ───────────────────────────────────────────
-    Instrumentator().instrument(app).expose(app, endpoint="/metrics")
+    # Skip probes and the scrape endpoint so the demo charts show clinical traffic.
+    Instrumentator(
+        should_group_status_codes=False,
+        excluded_handlers=["/metrics", "/health", "/", "/docs", "/redoc", "/openapi.json"],
+    ).add(_record_request).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
     # ── Routes ───────────────────────────────────────────────
     app.include_router(router)
