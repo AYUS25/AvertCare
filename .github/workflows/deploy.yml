@@ -6,15 +6,10 @@ on:
   pull_request:
     branches: [main]
 
-# ─────────────────────────────────────────────────────────────
-# Shared env
-# ─────────────────────────────────────────────────────────────
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: avert-care/avertcare/avertcare-backend
 
 jobs:
-  # ── 1. Lint + Security ──────────────────────────────────────
   lint:
     name: Lint & Security Scan
     runs-on: ubuntu-latest
@@ -24,18 +19,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
 
       - name: Install linting tools
-        run: pip install ruff bandit
+        run: pip install "ruff==0.17.0" bandit
 
       - name: Ruff lint
         run: ruff check backend/
 
       - name: Bandit security scan
-        run: bandit -r backend/app/ -ll  # only medium+ severity
+        run: bandit -r backend/app/ -ll
 
-  # ── 2. Test ─────────────────────────────────────────────────
   test:
     name: Run Pytest Suite
     runs-on: ubuntu-latest
@@ -50,7 +45,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install CPU torch
+        run: pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.5.1"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -58,7 +57,6 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v --tb=short
 
-  # ── 3. Build & Push Docker Image ────────────────────────────
   build-push:
     name: Build & Push Backend Image
     runs-on: ubuntu-latest
@@ -78,19 +76,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set lowercase image name
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: ./backend
           push: true
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
 
-  # ── 4. Deploy Frontend to Vercel ────────────────────────────
   deploy-frontend:
     name: Deploy Frontend (Vercel)
     runs-on: ubuntu-latest
     needs: build-push
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
     steps:
       - uses: actions/checkout@v4
@@ -100,10 +104,15 @@ jobs:
           node-version: "20"
 
       - name: Deploy to Vercel
+        if: env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != ''
         uses: amondnet/vercel-action@v25
         with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN }}
-          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
-          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          vercel-token: ${{ env.VERCEL_TOKEN }}
+          vercel-org-id: ${{ env.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ env.VERCEL_PROJECT_ID }}
           working-directory: ./frontend
           vercel-args: "--prod"
+
+      - name: Skip Vercel when secrets are not configured
+        if: env.VERCEL_TOKEN == '' || env.VERCEL_ORG_ID == '' || env.VERCEL_PROJECT_ID == ''
+        run: echo "Vercel secrets are not set, so production deploy was skipped."

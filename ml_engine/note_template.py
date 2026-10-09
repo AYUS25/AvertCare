@@ -8,10 +8,16 @@ readmitted_binary.
 
 from __future__ import annotations
 
+import math
+
+
+def _missing(value) -> bool:
+    return value is None or (isinstance(value, float) and math.isnan(value))
+
 
 def _as_int(value, default=0) -> int:
     try:
-        if value is None or (isinstance(value, float) and value != value):
+        if _missing(value):
             return default
         return int(value)
     except (TypeError, ValueError):
@@ -25,7 +31,7 @@ def build_discharge_note(row) -> str:
             value = row.get(key, default)
         else:
             value = getattr(row, key, default)
-        if value is None or (isinstance(value, float) and value != value):
+        if _missing(value):
             return default
         return value
 
