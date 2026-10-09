@@ -28,7 +28,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # fit a demo machine.
 COPY requirements.txt .
 RUN pip install --no-cache-dir --user --index-url https://download.pytorch.org/whl/cpu "torch==2.5.1" \
- && pip install --no-cache-dir --user -r requirements.txt
+ && pip install --no-cache-dir --user -r requirements.txt \
+ && pip uninstall -y nvidia-nccl-cu12 || true
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -55,6 +56,5 @@ ENV PATH=/root/.local/bin:$PATH
 EXPOSE 8000
 
 # One worker so /metrics and the request counters live in the same process.
-# Multiple workers each keep a private registry, and Prometheus would scrape
-# an empty or partial set of charts.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Render injects PORT; local Compose leaves it unset and uses 8000.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

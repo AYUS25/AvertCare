@@ -62,6 +62,7 @@ services:
       # The API is accessed from the *browser*, so it must use localhost, not
       # the Docker service name. This is correct for local dev.
       - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - HOSTNAME=0.0.0.0
     depends_on:
       backend:
         condition: service_healthy
@@ -88,7 +89,7 @@ services:
       - avertcare-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/6333'"]
       interval: 15s
       timeout: 5s
       retries: 3
