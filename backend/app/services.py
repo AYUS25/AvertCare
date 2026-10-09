@@ -303,7 +303,7 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
         shap_features.sort(key=lambda x: abs(x.impact), reverse=True)
         sdoh_flags = _extract_sdoh_flags(payload.clinical_note)
         care_plan, plan_source, rationale = _compose_care(
-            risk_category, raw_score, sdoh_flags, shap_features, []
+            risk_category, raw_score, sdoh_flags, shap_features, [], _a1c(payload.a1c_result)
         )
         cms_saved = round(15_400 * raw_score, 2) if risk_category == RiskCategory.HIGH else None
         return PredictResponse(
@@ -385,7 +385,7 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
                     twin_interventions.append(item)
 
     care_plan, plan_source, rationale = _compose_care(
-        risk_category, raw_score, sdoh_flags, shap_features, twin_interventions
+        risk_category, raw_score, sdoh_flags, shap_features, twin_interventions, _a1c(payload.a1c_result)
     )
 
     cms_saved = round(15_400 * raw_score, 2) if risk_category == RiskCategory.HIGH else None
@@ -532,6 +532,8 @@ You will receive structured JSON containing:
   - twin_interventions: list[str] — successful interventions from similar non-readmitted patients
 
 Your task: Generate a concise, evidence-based 3-point prescriptive discharge plan.
+If a1c_result is Not_Tested, one action must tell the clinician to order HbA1c before discharge.
+If a1c_result is >7 or >8, one action must arrange follow-up for the elevated HbA1c.
 
 Respond ONLY with valid JSON in exactly this format:
 {
@@ -550,12 +552,32 @@ def _plain_feature(name: str) -> str:
     return name.replace("num__", "").replace("cat__", "").replace("_", " ")
 
 
-def _rule_rationale(shap_features: list[SHAPFeature], sdoh_flags: list[str]) -> str:
+def _rule_rationale(shap_features: list[SHAPFeature], sdoh_flags: list[str], a1c_result: str) -> str:
     driver = _plain_feature(shap_features[0].feature) if shap_features else "the chart"
     sentence = f"The strongest chart driver is {driver}."
+    if a1c_result == "Not_Tested":
+        sentence += " HbA1c was not measured during this stay."
+    elif a1c_result in {">7", ">8"}:
+        sentence += " HbA1c was elevated."
     if sdoh_flags and not sdoh_flags[0].lower().startswith("no sdoh"):
         sentence += f" The note also shows {sdoh_flags[0].rstrip('.').lower()}."
     return sentence
+
+
+def _a1c_action(a1c_result: str) -> str | None:
+    if a1c_result == "Not_Tested":
+        return "Order an HbA1c test before discharge."
+    if a1c_result in {">7", ">8"}:
+        return "Arrange prompt diabetes follow-up for an elevated HbA1c."
+    return None
+
+
+def _apply_a1c(steps: list[str], a1c_result: str) -> list[str]:
+    action = _a1c_action(a1c_result)
+    if action is None:
+        return _cap_plan(steps)
+    rest = [step for step in steps if "a1c" not in step.lower() and "hba1c" not in step.lower()]
+    return _cap_plan([action, *rest])
 
 
 def _cap_plan(steps: list[str]) -> list[str]:
@@ -573,14 +595,18 @@ def _compose_care(
     sdoh_flags: list[str],
     shap_features: list[SHAPFeature],
     twin_interventions: list[str],
+    a1c_result: str,
 ) -> tuple[list[str], PlanSource, str]:
+    rationale = _rule_rationale(shap_features, sdoh_flags, a1c_result)
     if settings.LIVE_LLM_ENABLED:
-        drafted = _generate_llm_care_plan(risk_score, sdoh_flags, shap_features, twin_interventions)
+        drafted = _generate_llm_care_plan(
+            risk_score, sdoh_flags, shap_features, twin_interventions, a1c_result
+        )
         if drafted is not None:
-            steps, rationale = drafted
-            return steps, PlanSource.GEMINI, rationale
-    steps = _cap_plan(_generate_rule_care_plan(risk, sdoh_flags))
-    return steps, PlanSource.RULES, _rule_rationale(shap_features, sdoh_flags)
+            steps, drafted_rationale = drafted
+            return _apply_a1c(steps, a1c_result), PlanSource.GEMINI, drafted_rationale or rationale
+    steps = _apply_a1c(_generate_rule_care_plan(risk, sdoh_flags), a1c_result)
+    return steps, PlanSource.RULES, rationale
 
 
 def _generate_llm_care_plan(
@@ -588,6 +614,7 @@ def _generate_llm_care_plan(
     sdoh_flags: list[str],
     shap_features: list[SHAPFeature],
     twin_interventions: list[str] | None = None,
+    a1c_result: str = "Not_Tested",
 ) -> tuple[list[str], str] | None:
     """Call Gemini. None means the caller should use the rule checklist."""
     try:
@@ -602,6 +629,7 @@ def _generate_llm_care_plan(
             "sdoh_flags": sdoh_flags,
             "top_shap_features": [{"feature": f.feature, "impact": f.impact} for f in shap_features[:3]],
             "twin_interventions": interventions,
+            "a1c_result": a1c_result,
         })
 
         response = client.models.generate_content(
@@ -619,7 +647,7 @@ def _generate_llm_care_plan(
         if not steps:
             return None
         rationale = str(parsed.get("clinical_rationale") or "").strip()
-        return steps, rationale or _rule_rationale(shap_features, sdoh_flags)
+        return steps, rationale or _rule_rationale(shap_features, sdoh_flags, a1c_result)
 
     except Exception as exc:
         logger.warning("Gemini call failed (%s), falling back to rule-based care plan.", exc)
