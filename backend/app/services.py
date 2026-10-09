@@ -23,6 +23,7 @@ from app.core.config import settings
 from app.note_template import build_discharge_note
 from app.schemas import (
     PatientEncounter,
+    PlanSource,
     PredictResponse,
     RiskCategory,
     SHAPFeature,
@@ -102,6 +103,13 @@ def _a1c(value: str) -> str:
     return "Not_Tested"
 
 
+_DISPOSITIONS = {"1", "2", "3", "4", "5", "6", "7", "18", "22", "25", "Other"}
+_DIAG_GROUPS = {
+    "Circulatory", "Respiratory", "Digestive", "Genitourinary",
+    "Neoplasms", "Musculoskeletal", "Injury", "Diabetes", "Other",
+}
+
+
 def _model_frame(payload: PatientEncounter) -> pd.DataFrame:
     """Build the 34 training columns from the clinician payload.
 
@@ -109,8 +117,14 @@ def _model_frame(payload: PatientEncounter) -> pd.DataFrame:
     collect stay at the same safe defaults the preprocessor was fit to accept.
     """
     inpatient = int(payload.number_inpatient)
+    # Older clients sent prior admits on num_prior_admissions only.
+    if inpatient == 0 and int(payload.num_prior_admissions) > 0:
+        inpatient = int(payload.num_prior_admissions)
+    emergency = int(payload.number_emergency)
     diabetes_med = payload.diabetes_med if payload.diabetes_med in {"Yes", "No"} else "No"
     gender = payload.gender if payload.gender in {"Male", "Female", "Unknown"} else "Unknown"
+    disposition = payload.discharge_disposition if payload.discharge_disposition in _DISPOSITIONS else "Other"
+    diag_group = payload.diag_1_group if payload.diag_1_group in _DIAG_GROUPS else _diagnosis_group(payload.primary_diagnosis)
     return pd.DataFrame({
         "age_numeric": [payload.age],
         "num_lab_procedures": [40],
@@ -118,21 +132,21 @@ def _model_frame(payload: PatientEncounter) -> pd.DataFrame:
         "num_medications": [payload.num_medications],
         "num_meds_active": [1 if diabetes_med == "Yes" else 0],
         "num_procedures": [0],
-        "number_diagnoses": [1],
-        "number_emergency": [0],
+        "number_diagnoses": [int(payload.number_diagnoses)],
+        "number_emergency": [emergency],
         "number_inpatient": [inpatient],
         "number_outpatient": [0],
         "time_in_hospital": [payload.time_in_hospital],
-        "total_prior_visits": [inpatient],
+        "total_prior_visits": [inpatient + emergency],
         "A1Cresult": [_a1c(payload.a1c_result)],
         "admission_source_id": ["Other"],
         "admission_type_id": ["Other"],
         "change": ["No"],
         "diabetesMed": [diabetes_med],
-        "diag_1_group": [_diagnosis_group(payload.primary_diagnosis)],
+        "diag_1_group": [diag_group],
         "diag_2_group": ["Other"],
         "diag_3_group": ["Other"],
-        "discharge_disposition_id": ["1"],
+        "discharge_disposition_id": [disposition],
         "gender": [gender],
         "glimepiride": ["No"],
         "glipizide": ["No"],
@@ -202,6 +216,7 @@ def _safe_rag_retrieval(payload: PatientEncounter, k: int) -> TwinPatientRespons
             twin_id=str(int(row["encounter_id"])),
             age=int(float(row["age"])),
             primary_diagnosis=str(row["primary_diagnosis"]),
+            diagnosis_group=str(row["primary_diagnosis"]),
             similarity_score=round(score, 4),
             was_readmitted=bool(int(row["readmitted_binary"])),
             successful_interventions=interventions,
@@ -287,10 +302,8 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
         ]
         shap_features.sort(key=lambda x: abs(x.impact), reverse=True)
         sdoh_flags = _extract_sdoh_flags(payload.clinical_note)
-        care_plan = (
-            _generate_llm_care_plan(raw_score, sdoh_flags, shap_features)
-            if settings.LIVE_LLM_ENABLED
-            else _generate_rule_care_plan(risk_category, sdoh_flags)
+        care_plan, plan_source, rationale = _compose_care(
+            risk_category, raw_score, sdoh_flags, shap_features, []
         )
         cms_saved = round(15_400 * raw_score, 2) if risk_category == RiskCategory.HIGH else None
         return PredictResponse(
@@ -300,6 +313,8 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
             shap_features=shap_features,
             sdoh_flags=sdoh_flags,
             care_plan=care_plan,
+            plan_source=plan_source,
+            clinical_rationale=rationale,
             cms_penalty_saved_usd=cms_saved,
         )
 
@@ -349,10 +364,13 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
         elif sv.ndim == 2:
             sv = sv[0]
         feature_names = meta["feature_names"]
-        all_shap = [
-            SHAPFeature(feature=feature_names[i], impact=round(float(sv[i]), 4))
-            for i in range(len(feature_names))
-        ]
+        row = np.asarray(X_input)[0]
+        all_shap = []
+        for i in range(len(feature_names)):
+            # A zero one-hot column is an option the clinician did not select.
+            if feature_names[i].startswith("cat__") and float(row[i]) == 0.0:
+                continue
+            all_shap.append(SHAPFeature(feature=feature_names[i], impact=round(float(sv[i]), 4)))
         all_shap.sort(key=lambda x: abs(x.impact), reverse=True)
         shap_features = all_shap[:5]
     except Exception as exc:
@@ -366,11 +384,8 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
                 if item not in twin_interventions:
                     twin_interventions.append(item)
 
-    # 6. Care plan
-    care_plan = (
-        _generate_llm_care_plan(raw_score, sdoh_flags, shap_features, twin_interventions)
-        if settings.LIVE_LLM_ENABLED
-        else _generate_rule_care_plan(risk_category, sdoh_flags)
+    care_plan, plan_source, rationale = _compose_care(
+        risk_category, raw_score, sdoh_flags, shap_features, twin_interventions
     )
 
     cms_saved = round(15_400 * raw_score, 2) if risk_category == RiskCategory.HIGH else None
@@ -382,6 +397,8 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
         shap_features=shap_features,
         sdoh_flags=sdoh_flags,
         care_plan=care_plan,
+        plan_source=plan_source,
+        clinical_rationale=rationale,
         cms_penalty_saved_usd=cms_saved,
     )
 
@@ -431,7 +448,8 @@ def _live_rag_retrieval(payload: PatientEncounter) -> TwinPatientResponse:
             twin_id=r.payload.get("patient_id", f"P-{i}"),
             age=int(r.payload.get("age", 65)),
             primary_diagnosis=str(r.payload.get("primary_diagnosis", "Unknown")),
-            similarity_score=round(float(r.score), 4),
+            diagnosis_group=str(r.payload.get("primary_diagnosis", payload.diag_1_group)),
+            similarity_score=round(float(min(max(r.score, 0.0), 1.0)), 4),
             was_readmitted=bool(r.payload.get("readmitted_binary", 0)),
             successful_interventions=r.payload.get("interventions", []),
         )
@@ -458,6 +476,7 @@ def _mock_rag_retrieval(payload: PatientEncounter) -> TwinPatientResponse:
             twin_id="P-10042",
             age=payload.age + 3,
             primary_diagnosis=payload.primary_diagnosis,
+            diagnosis_group=payload.diag_1_group,
             similarity_score=0.94,
             was_readmitted=False,
             successful_interventions=[
@@ -469,6 +488,7 @@ def _mock_rag_retrieval(payload: PatientEncounter) -> TwinPatientResponse:
             twin_id="P-10087",
             age=payload.age - 5,
             primary_diagnosis=payload.primary_diagnosis,
+            diagnosis_group=payload.diag_1_group,
             similarity_score=0.88,
             was_readmitted=True,
             successful_interventions=[],
@@ -477,6 +497,7 @@ def _mock_rag_retrieval(payload: PatientEncounter) -> TwinPatientResponse:
             twin_id="P-10213",
             age=payload.age + 1,
             primary_diagnosis=payload.primary_diagnosis,
+            diagnosis_group=payload.diag_1_group,
             similarity_score=0.82,
             was_readmitted=False,
             successful_interventions=[
@@ -525,13 +546,50 @@ Respond ONLY with valid JSON in exactly this format:
 """
 
 
+def _plain_feature(name: str) -> str:
+    return name.replace("num__", "").replace("cat__", "").replace("_", " ")
+
+
+def _rule_rationale(shap_features: list[SHAPFeature], sdoh_flags: list[str]) -> str:
+    driver = _plain_feature(shap_features[0].feature) if shap_features else "the chart"
+    sentence = f"The strongest chart driver is {driver}."
+    if sdoh_flags and not sdoh_flags[0].lower().startswith("no sdoh"):
+        sentence += f" The note also shows {sdoh_flags[0].rstrip('.').lower()}."
+    return sentence
+
+
+def _cap_plan(steps: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    for step in steps:
+        text = step.replace("⚠️ PRIORITY: ", "").strip()
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return cleaned[:3]
+
+
+def _compose_care(
+    risk: RiskCategory,
+    risk_score: float,
+    sdoh_flags: list[str],
+    shap_features: list[SHAPFeature],
+    twin_interventions: list[str],
+) -> tuple[list[str], PlanSource, str]:
+    if settings.LIVE_LLM_ENABLED:
+        drafted = _generate_llm_care_plan(risk_score, sdoh_flags, shap_features, twin_interventions)
+        if drafted is not None:
+            steps, rationale = drafted
+            return steps, PlanSource.GEMINI, rationale
+    steps = _cap_plan(_generate_rule_care_plan(risk, sdoh_flags))
+    return steps, PlanSource.RULES, _rule_rationale(shap_features, sdoh_flags)
+
+
 def _generate_llm_care_plan(
     risk_score: float,
     sdoh_flags: list[str],
     shap_features: list[SHAPFeature],
     twin_interventions: list[str] | None = None,
-) -> list[str]:
-    """Call Gemini API to synthesise a prescriptive care plan."""
+) -> tuple[list[str], str] | None:
+    """Call Gemini. None means the caller should use the rule checklist."""
     try:
         client = _get_gemini_client()
         interventions = twin_interventions or [
@@ -552,17 +610,20 @@ def _generate_llm_care_plan(
         )
 
         raw = response.text.strip()
-        # Strip markdown code fences if present
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             raw = raw.removeprefix("json")
 
         parsed = json.loads(raw)
-        return parsed.get("interventions", _generate_rule_care_plan(RiskCategory.HIGH, sdoh_flags))
+        steps = _cap_plan(parsed.get("interventions") or [])
+        if not steps:
+            return None
+        rationale = str(parsed.get("clinical_rationale") or "").strip()
+        return steps, rationale or _rule_rationale(shap_features, sdoh_flags)
 
     except Exception as exc:
         logger.warning("Gemini call failed (%s), falling back to rule-based care plan.", exc)
-        return _generate_rule_care_plan(RiskCategory.HIGH, sdoh_flags)
+        return None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -589,17 +650,16 @@ def _extract_sdoh_flags(note: str) -> list[str]:
 
 
 def _generate_rule_care_plan(risk: RiskCategory, sdoh_flags: list[str]) -> list[str]:
-    """Rule-based care plan fallback."""
-    base = [
-        "Schedule structured telephone follow-up within 7 days of discharge.",
-        "Conduct pharmacist-led medication reconciliation before discharge.",
-    ]
+    """Rule-based care plan. Social needs come first. The caller keeps three steps."""
+    steps: list[str] = []
     if risk == RiskCategory.HIGH:
-        base.insert(0, "⚠️ PRIORITY: Initiate 72-hour post-discharge telehealth check-in.")
+        steps.append("Start a 72-hour post-discharge telehealth check-in.")
     if any("transport" in f.lower() for f in sdoh_flags):
-        base.append("Arrange non-emergency medical transport for follow-up appointments.")
+        steps.append("Arrange non-emergency medical transport for follow-up appointments.")
     if any("financial" in f.lower() or "uninsured" in f.lower() for f in sdoh_flags):
-        base.append("Refer to hospital financial navigator for prescription cost-assistance programs.")
+        steps.append("Refer to the hospital financial navigator for prescription cost assistance.")
     if any("isolation" in f.lower() or "alone" in f.lower() for f in sdoh_flags):
-        base.append("Enroll patient in community care coordination for daily wellness check-ins.")
-    return base
+        steps.append("Arrange a daily wellness check because the patient lives alone.")
+    steps.append("Conduct pharmacist-led medication reconciliation before discharge.")
+    steps.append("Schedule a telephone follow-up within 7 days of discharge.")
+    return steps
