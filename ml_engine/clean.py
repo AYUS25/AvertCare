@@ -238,6 +238,45 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
         if dropped_meds:
             print(f"[clean] Dropped medication columns (>99% 'No'): {dropped_meds}")
 
+    # Clinical ratios, intensities & interaction features
+    time_hosp = df.get("time_in_hospital", pd.Series(1, index=df.index)).clip(lower=1)
+    df["labs_per_day"] = df.get("num_lab_procedures", 0) / time_hosp
+    df["meds_per_day"] = df.get("num_medications", 0) / time_hosp
+    df["procedures_per_day"] = df.get("num_procedures", 0) / time_hosp
+    df["diagnoses_per_day"] = df.get("number_diagnoses", 0) / time_hosp
+    df["lab_med_ratio"] = df.get("num_lab_procedures", 0) / (df.get("num_medications", 0) + 1.0)
+
+    num_inp = df.get("number_inpatient", pd.Series(0, index=df.index))
+    num_emg = df.get("number_emergency", pd.Series(0, index=df.index))
+    num_out = df.get("number_outpatient", pd.Series(0, index=df.index))
+
+    df["has_prior_inpatient"] = (num_inp > 0).astype(int)
+    df["has_prior_emergency"] = (num_emg > 0).astype(int)
+    df["has_prior_outpatient"] = (num_out > 0).astype(int)
+
+    tot_v = df["total_prior_visits"].clip(lower=0) + 1.0
+    df["inpatient_ratio"] = num_inp / tot_v
+    df["emergency_ratio"] = num_emg / tot_v
+
+    df["high_utilizer"] = (df["total_prior_visits"] >= 3).astype(int)
+    df["polypharmacy"] = (df.get("num_medications", 0) >= 10).astype(int)
+    df["clinical_complexity"] = (
+        df.get("num_lab_procedures", 0)
+        + (df.get("num_procedures", 0) * 2.5)
+        + (df.get("number_diagnoses", 0) * 3.0)
+    )
+
+    df["inpatient_sq"] = num_inp ** 2
+    df["emergency_sq"] = num_emg ** 2
+
+    age_num = df.get("age_numeric", pd.Series(65.0, index=df.index))
+    num_diag = df.get("number_diagnoses", pd.Series(0, index=df.index))
+    df["age_inpatient_interaction"] = age_num * (num_inp + 1.0)
+    df["age_diag_interaction"] = age_num * (num_diag + 1.0)
+
+    active_meds = df.get("num_meds_active", pd.Series(0, index=df.index)).clip(lower=0) + 1.0
+    df["med_change_ratio"] = df.get("num_med_changes", pd.Series(0, index=df.index)) / active_meds
+
     print(f"[clean] Output shape: {df.shape}")
     return df
 
@@ -321,6 +360,45 @@ def clean_inference_patient(df_raw: pd.DataFrame) -> pd.DataFrame:
             df["num_med_changes"] = 0
         if "num_meds_active" not in df.columns:
             df["num_meds_active"] = 0
+
+    # Clinical ratios, intensities & interaction features
+    time_hosp = df.get("time_in_hospital", pd.Series(1, index=df.index)).clip(lower=1)
+    df["labs_per_day"] = df.get("num_lab_procedures", 0) / time_hosp
+    df["meds_per_day"] = df.get("num_medications", 0) / time_hosp
+    df["procedures_per_day"] = df.get("num_procedures", 0) / time_hosp
+    df["diagnoses_per_day"] = df.get("number_diagnoses", 0) / time_hosp
+    df["lab_med_ratio"] = df.get("num_lab_procedures", 0) / (df.get("num_medications", 0) + 1.0)
+
+    num_inp = df.get("number_inpatient", pd.Series(0, index=df.index))
+    num_emg = df.get("number_emergency", pd.Series(0, index=df.index))
+    num_out = df.get("number_outpatient", pd.Series(0, index=df.index))
+
+    df["has_prior_inpatient"] = (num_inp > 0).astype(int)
+    df["has_prior_emergency"] = (num_emg > 0).astype(int)
+    df["has_prior_outpatient"] = (num_out > 0).astype(int)
+
+    tot_v = df["total_prior_visits"].clip(lower=0) + 1.0
+    df["inpatient_ratio"] = num_inp / tot_v
+    df["emergency_ratio"] = num_emg / tot_v
+
+    df["high_utilizer"] = (df["total_prior_visits"] >= 3).astype(int)
+    df["polypharmacy"] = (df.get("num_medications", 0) >= 10).astype(int)
+    df["clinical_complexity"] = (
+        df.get("num_lab_procedures", 0)
+        + (df.get("num_procedures", 0) * 2.5)
+        + (df.get("number_diagnoses", 0) * 3.0)
+    )
+
+    df["inpatient_sq"] = num_inp ** 2
+    df["emergency_sq"] = num_emg ** 2
+
+    age_num = df.get("age_numeric", pd.Series(65.0, index=df.index))
+    num_diag = df.get("number_diagnoses", pd.Series(0, index=df.index))
+    df["age_inpatient_interaction"] = age_num * (num_inp + 1.0)
+    df["age_diag_interaction"] = age_num * (num_diag + 1.0)
+
+    active_meds = df.get("num_meds_active", pd.Series(0, index=df.index)).clip(lower=0) + 1.0
+    df["med_change_ratio"] = df.get("num_med_changes", pd.Series(0, index=df.index)) / active_meds
 
     return df
 

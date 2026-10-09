@@ -76,7 +76,7 @@ Fitted preprocessors are saved as:
 - `ml_engine/data/processed/preprocessor_ft.joblib`
 
 ## Numeric Features
-  age_numeric, num_lab_procedures, num_med_changes, num_medications, num_meds_active, num_procedures, number_diagnoses, number_emergency, number_inpatient, number_outpatient, time_in_hospital, total_prior_visits
+  age_diag_interaction, age_inpatient_interaction, age_numeric, clinical_complexity, diagnoses_per_day, emergency_ratio, emergency_sq, has_prior_emergency, has_prior_inpatient, has_prior_outpatient, high_utilizer, inpatient_ratio, inpatient_sq, lab_med_ratio, labs_per_day, med_change_ratio, meds_per_day, num_lab_procedures, num_med_changes, num_medications, num_meds_active, num_procedures, number_diagnoses, number_emergency, number_inpatient, number_outpatient, polypharmacy, procedures_per_day, time_in_hospital, total_prior_visits
 
 ## Categorical Features
   A1Cresult, admission_source_id, admission_type_id, change, diabetesMed, diag_1_group, diag_2_group, diag_3_group, discharge_disposition_id, gender, glimepiride, glipizide, glyburide, insulin, max_glu_serum, medical_specialty, metformin, payer_code, pioglitazone, race, repaglinide, rosiglitazone
