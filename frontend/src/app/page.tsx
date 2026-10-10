@@ -5,10 +5,7 @@ import {
   Activity, 
   AlertTriangle, 
   CheckCircle, 
-  Clock, 
   FileText, 
-  Pill, 
-  Stethoscope, 
   Users,
   ShieldAlert,
   Loader2,
@@ -102,13 +99,16 @@ type PredictResponse = {
   shap_features: SHAPFeature[];
   sdoh_flags: string[];
   care_plan: string[];
-  cms_penalty_saved_usd?: number;
+  plan_source?: "gemini" | "rules";
+  clinical_rationale?: string;
+  cms_penalty_saved_usd?: number | null;
 };
 
 type TwinPatient = {
   twin_id: string;
   age: number;
   primary_diagnosis: string;
+  diagnosis_group?: string;
   similarity_score: number;
   was_readmitted: boolean;
   successful_interventions: string[];
@@ -122,15 +122,40 @@ type TwinPatientResponse = {
   twins: TwinPatient[];
 };
 
-// Mock Data Contract
-const MOCK_PATIENT: PatientEncounter = {
+const fieldClass =
+  "w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))]";
+
+const NOTE_HINT =
+  "Check the chart. The note must be at least one short sentence, and the diagnosis must be filled in.";
+
+const QUIET_DISCHARGE: PatientEncounter = {
+  patient_id: "MRN-782910",
+  age: 54,
+  primary_diagnosis: "Type 2 diabetes",
+  time_in_hospital: 3,
+  num_prior_admissions: 0,
+  num_medications: 6,
+  clinical_note:
+    "Patient lives with spouse. Blood glucose stable. Transport home is arranged. Follow-up already booked.",
+  a1c_result: "Norm",
+  number_inpatient: 0,
+  number_emergency: 0,
+  number_diagnoses: 3,
+  diabetes_med: "Yes",
+  gender: "Female",
+  discharge_disposition: "1",
+  diag_1_group: "Diabetes",
+};
+
+const SAMPLE_CHART: PatientEncounter = {
   patient_id: "MRN-782910",
   age: 67,
   primary_diagnosis: "Type 2 Diabetes with complications",
   time_in_hospital: 7,
   num_prior_admissions: 2,
   num_medications: 8,
-  clinical_note: "Patient lives alone and has expressed concerns about inability to afford insulin. Polypharmacy noted. Blood glucose stabilizing. Discharge planned for tomorrow. Transport home is currently unarranged.",
+  clinical_note:
+    "Patient lives alone and has expressed concerns about inability to afford insulin. Polypharmacy noted. Blood glucose stabilizing. Discharge planned for tomorrow. Transport home is currently unarranged.",
   a1c_result: ">8",
   number_inpatient: 2,
   number_emergency: 0,
@@ -141,49 +166,139 @@ const MOCK_PATIENT: PatientEncounter = {
   diag_1_group: "Diabetes",
 };
 
+const HIGH_UTIL_DISCHARGE: PatientEncounter = {
+  patient_id: "MRN-782910",
+  age: 74,
+  primary_diagnosis: "Heart failure",
+  time_in_hospital: 8,
+  num_prior_admissions: 4,
+  num_medications: 12,
+  clinical_note:
+    "Patient lives alone and cannot afford insulin. No transport. Polypharmacy noted.",
+  a1c_result: ">8",
+  number_inpatient: 4,
+  number_emergency: 2,
+  number_diagnoses: 8,
+  diabetes_med: "Yes",
+  gender: "Male",
+  discharge_disposition: "3",
+  diag_1_group: "Circulatory",
+};
+
+function messageForStatus(status: number): string {
+  if (status === 401) return "Sign in again. The login expired.";
+  if (status === 422) return NOTE_HINT;
+  return String(status);
+}
+
+function riskTone(category: string): { bar: string; text: string } {
+  if (category === "High Risk") return { bar: "bg-rose-500", text: "text-rose-400" };
+  if (category === "Moderate Risk") return { bar: "bg-amber-500", text: "text-amber-400" };
+  return { bar: "bg-emerald-500", text: "text-emerald-400" };
+}
+
+function clampInt(raw: string, min: number, max: number): number | null {
+  if (raw.trim() === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
+}
 
 export default function Dashboard() {
-  const [patient, setPatient] = useState<PatientEncounter>(MOCK_PATIENT);
+  const [patient, setPatient] = useState<PatientEncounter>(SAMPLE_CHART);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [predictData, setPredictData] = useState<PredictResponse | null>(null);
   const [ragData, setRagData] = useState<TwinPatientResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [predictError, setPredictError] = useState<string | null>(null);
+  const [ragError, setRagError] = useState<string | null>(null);
 
   const { token, logout, user } = useAuth();
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const noteTooShort = patient.clinical_note.trim().length < 10;
+
+  const applyPreset = (next: PatientEncounter) => {
+    setPatient(next);
+    setPredictData(null);
+    setRagData(null);
+    setPredictError(null);
+    setRagError(null);
+  };
 
   const handleAnalyze = async () => {
-    setIsAnalyzing(true);
-    setError(null);
-    try {
-      const headers = { 
-        "Content-Type": "application/json",
-        ...(token && { "Authorization": `Bearer ${token}` })
-      };
+    if (noteTooShort) return;
 
-      const [predictRes, ragRes] = await Promise.all([
-        fetch(`${API_URL}/api/predict`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(patient),
-        }),
-        fetch(`${API_URL}/api/twin-patients`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(patient),
-        }),
+    setIsAnalyzing(true);
+    setPredictError(null);
+    setRagError(null);
+    try {
+      let authToken = token;
+      if (user) {
+        try {
+          authToken = await user.getIdToken();
+        } catch {
+          const expired = "Sign in again. The login expired.";
+          setPredictData(null);
+          setRagData(null);
+          setPredictError(expired);
+          setRagError(expired);
+          return;
+        }
+      }
+
+      const headers = {
+        "Content-Type": "application/json",
+        ...(authToken && { Authorization: `Bearer ${authToken}` }),
+      };
+      const body = JSON.stringify({
+        ...patient,
+        num_prior_admissions: patient.number_inpatient,
+      });
+
+      const [predictResult, ragResult] = await Promise.allSettled([
+        fetch(`${API_URL}/api/predict`, { method: "POST", headers, body }),
+        fetch(`${API_URL}/api/twin-patients`, { method: "POST", headers, body }),
       ]);
 
-      if (!predictRes.ok || !ragRes.ok) throw new Error("Failed to fetch from AvertCare API");
+      if (predictResult.status === "fulfilled") {
+        const res = predictResult.value;
+        if (res.ok) {
+          setPredictData(await res.json());
+        } else {
+          setPredictData(null);
+          setPredictError(messageForStatus(res.status));
+        }
+      } else {
+        setPredictData(null);
+        setPredictError("The API is not reachable.");
+      }
 
-      setPredictData(await predictRes.json());
-      setRagData(await ragRes.json());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error occurred");
+      if (ragResult.status === "fulfilled") {
+        const res = ragResult.value;
+        if (res.ok) {
+          setRagData(await res.json());
+        } else {
+          setRagData(null);
+          setRagError(messageForStatus(res.status));
+        }
+      } else {
+        setRagData(null);
+        setRagError("The API is not reachable.");
+      }
     } finally {
       setIsAnalyzing(false);
     }
   };
+
+  const tone = predictData ? riskTone(predictData.risk_category) : null;
+  const noSocialSignals =
+    !!predictData &&
+    (predictData.sdoh_flags.length === 0 ||
+      (predictData.sdoh_flags.length === 1 &&
+        predictData.sdoh_flags[0] === "No SDoH signals detected"));
+  const maxAbsImpact = predictData
+    ? Math.max(0, ...predictData.shap_features.map((feat) => Math.abs(feat.impact)))
+    : 0;
+  const hasOutcome = predictData || ragData || predictError || ragError;
 
   return (
     <div className="min-h-screen bg-[hsl(var(--background))] text-[hsl(var(--foreground))] p-6 font-sans">
@@ -199,8 +314,11 @@ export default function Dashboard() {
         </div>
         <div className="flex items-center gap-4">
           <div className="px-4 py-2 text-sm font-medium border rounded-full border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]">
-            FHIR Sync: <span className="text-emerald-400">Connected</span>
+            Sample chart
           </div>
+          {user?.email && (
+            <span className="text-sm text-[hsl(var(--muted-foreground))]">{user.email}</span>
+          )}
           {user && (
             <button 
               onClick={logout}
@@ -218,7 +336,7 @@ export default function Dashboard() {
         {/* Left Column: Patient Profile */}
         <div className="lg:col-span-4 space-y-6">
           <div className="bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-xl p-6 shadow-sm">
-            <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-medium flex items-center gap-2">
                 <Users className="w-5 h-5 text-[hsl(var(--muted-foreground))]" />
                 Patient Encounter
@@ -228,44 +346,79 @@ export default function Dashboard() {
               </span>
             </div>
 
+            <div className="flex gap-2 mb-6">
+              <button
+                type="button"
+                onClick={() => applyPreset(QUIET_DISCHARGE)}
+                className="flex-1 text-sm border border-[hsl(var(--border))] rounded-lg px-3 py-2 hover:bg-[hsl(var(--muted))]"
+              >
+                Quiet discharge
+              </button>
+              <button
+                type="button"
+                onClick={() => applyPreset(HIGH_UTIL_DISCHARGE)}
+                className="flex-1 text-sm border border-[hsl(var(--border))] rounded-lg px-3 py-2 hover:bg-[hsl(var(--muted))]"
+              >
+                High-utilization discharge
+              </button>
+            </div>
+
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1">
                   <label className="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">Age</label>
-                  <div className="font-medium text-lg">{patient.age} yrs</div>
+                  <input
+                    type="number"
+                    min={0}
+                    max={130}
+                    className={fieldClass}
+                    value={patient.age}
+                    onChange={(e) => {
+                      const age = clampInt(e.target.value, 0, 130);
+                      if (age !== null) setPatient({ ...patient, age });
+                    }}
+                  />
                 </div>
                 <div className="space-y-1">
                   <label className="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">Length of Stay</label>
-                  <div className="font-medium text-lg flex items-center gap-2">
-                    <Clock className="w-4 h-4 text-amber-500" />
-                    {patient.time_in_hospital} days
-                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    max={30}
+                    className={fieldClass}
+                    value={patient.time_in_hospital}
+                    onChange={(e) => {
+                      const time_in_hospital = clampInt(e.target.value, 0, 30);
+                      if (time_in_hospital !== null) setPatient({ ...patient, time_in_hospital });
+                    }}
+                  />
                 </div>
               </div>
 
               <div className="space-y-1">
                 <label className="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">Primary Diagnosis</label>
-                <div className="font-medium flex items-start gap-2">
-                  <Stethoscope className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
-                  {patient.primary_diagnosis}
-                </div>
+                <input
+                  type="text"
+                  minLength={2}
+                  className={fieldClass}
+                  value={patient.primary_diagnosis}
+                  onChange={(e) => setPatient({ ...patient, primary_diagnosis: e.target.value })}
+                />
               </div>
 
-              <div className="grid grid-cols-2 gap-4 pt-2">
-                <div className="space-y-1">
-                  <label className="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">Prior Admits (12m)</label>
-                  <div className="font-medium text-lg flex items-center gap-2">
-                    <AlertTriangle className="w-4 h-4 text-rose-400" />
-                    {patient.num_prior_admissions}
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">Discharge Meds</label>
-                  <div className="font-medium text-lg flex items-center gap-2">
-                    <Pill className="w-4 h-4 text-purple-400" />
-                    {patient.num_medications}
-                  </div>
-                </div>
+              <div className="space-y-1">
+                <label className="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">Medication count</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={40}
+                  className={fieldClass}
+                  value={patient.num_medications}
+                  onChange={(e) => {
+                    const num_medications = clampInt(e.target.value, 0, 40);
+                    if (num_medications !== null) setPatient({ ...patient, num_medications });
+                  }}
+                />
               </div>
 
               <div className="space-y-2 pt-4">
@@ -278,7 +431,7 @@ export default function Dashboard() {
                   <div className="space-y-1">
                     <label className="text-xs text-[hsl(var(--muted-foreground))]">A1C Result</label>
                     <select
-                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      className={`${fieldClass} cursor-pointer`}
                       value={patient.a1c_result}
                       onChange={(e) => setPatient({...patient, a1c_result: e.target.value as PatientEncounter["a1c_result"]})}
                     >
@@ -293,7 +446,7 @@ export default function Dashboard() {
                   <div className="space-y-1">
                     <label className="text-xs text-[hsl(var(--muted-foreground))]">Gender</label>
                     <select
-                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      className={`${fieldClass} cursor-pointer`}
                       value={patient.gender}
                       onChange={(e) => setPatient({...patient, gender: e.target.value as PatientEncounter["gender"]})}
                     >
@@ -307,7 +460,7 @@ export default function Dashboard() {
                   <div className="space-y-1">
                     <label className="text-xs text-[hsl(var(--muted-foreground))]">Diabetes Meds</label>
                     <select
-                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      className={`${fieldClass} cursor-pointer`}
                       value={patient.diabetes_med}
                       onChange={(e) => setPatient({...patient, diabetes_med: e.target.value as "Yes" | "No"})}
                     >
@@ -320,9 +473,16 @@ export default function Dashboard() {
                   <div className="space-y-1">
                     <label className="text-xs text-[hsl(var(--muted-foreground))]">Inpatient Visits (1yr)</label>
                     <select
-                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      className={`${fieldClass} cursor-pointer`}
                       value={patient.number_inpatient}
-                      onChange={(e) => setPatient({...patient, number_inpatient: parseInt(e.target.value)})}
+                      onChange={(e) => {
+                        const number_inpatient = parseInt(e.target.value);
+                        setPatient({
+                          ...patient,
+                          number_inpatient,
+                          num_prior_admissions: number_inpatient,
+                        });
+                      }}
                     >
                       {[0,1,2,3,4,5,6,7,8].map(n => (
                         <option key={n} value={n}>{n}</option>
@@ -333,7 +493,7 @@ export default function Dashboard() {
                   <div className="space-y-1">
                     <label className="text-xs text-[hsl(var(--muted-foreground))]">Emergency Visits (1yr)</label>
                     <select
-                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      className={`${fieldClass} cursor-pointer`}
                       value={patient.number_emergency}
                       onChange={(e) => setPatient({...patient, number_emergency: parseInt(e.target.value)})}
                     >
@@ -346,7 +506,7 @@ export default function Dashboard() {
                   <div className="space-y-1">
                     <label className="text-xs text-[hsl(var(--muted-foreground))]">Diagnosis Count</label>
                     <select
-                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      className={`${fieldClass} cursor-pointer`}
                       value={patient.number_diagnoses}
                       onChange={(e) => setPatient({...patient, number_diagnoses: parseInt(e.target.value)})}
                     >
@@ -359,7 +519,7 @@ export default function Dashboard() {
                   <div className="space-y-1 col-span-2">
                     <label className="text-xs text-[hsl(var(--muted-foreground))]">Discharge Destination</label>
                     <select
-                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      className={`${fieldClass} cursor-pointer`}
                       value={patient.discharge_disposition}
                       onChange={(e) => setPatient({...patient, discharge_disposition: e.target.value})}
                     >
@@ -372,7 +532,7 @@ export default function Dashboard() {
                   <div className="space-y-1 col-span-2">
                     <label className="text-xs text-[hsl(var(--muted-foreground))]">Primary Diagnosis Group</label>
                     <select
-                      className="w-full bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))] cursor-pointer"
+                      className={`${fieldClass} cursor-pointer`}
                       value={patient.diag_1_group}
                       onChange={(e) => setPatient({...patient, diag_1_group: e.target.value})}
                     >
@@ -389,10 +549,13 @@ export default function Dashboard() {
                   <FileText className="w-4 h-4" /> Unstructured Clinical Note
                 </label>
                 <textarea
-                  className="w-full h-32 bg-[hsl(var(--muted))] border border-[hsl(var(--border))] rounded-lg p-3 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))]"
+                  className={`${fieldClass} h-32`}
                   value={patient.clinical_note}
                   onChange={(e) => setPatient({...patient, clinical_note: e.target.value})}
                 />
+                {noteTooShort && (
+                  <p className="text-sm text-[hsl(var(--muted-foreground))]">{NOTE_HINT}</p>
+                )}
               </div>
 
               <button
@@ -401,50 +564,62 @@ export default function Dashboard() {
                 className="w-full mt-4 bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] hover:opacity-90 font-medium py-3 rounded-lg flex items-center justify-center gap-2 transition-all disabled:opacity-50"
               >
                 {isAnalyzing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Activity className="w-5 h-5" />}
-                {isAnalyzing ? "Processing RAG & Models..." : "Analyze Patient Record"}
+                {isAnalyzing ? "Reviewing chart…" : "Analyze patient"}
               </button>
-              
-              {error && <div className="text-rose-500 text-sm mt-2 text-center">{error}</div>}
             </div>
           </div>
         </div>
 
         {/* Right Column: AI Insights */}
         <div className="lg:col-span-8 space-y-6">
-          {!predictData ? (
+          {!hasOutcome ? (
             <div className="h-full min-h-[400px] border border-dashed border-[hsl(var(--border))] rounded-xl flex flex-col items-center justify-center text-[hsl(var(--muted-foreground))] space-y-4">
               <ShieldAlert className="w-12 h-12 opacity-20" />
               <p>Run analysis to generate prescriptive insights.</p>
             </div>
           ) : (
-            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="space-y-6">
               
-              {/* Top Metrics Row */}
+              {predictError && !predictData && (
+                <div className="bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-xl p-6">
+                  <p className="text-sm text-[hsl(var(--muted-foreground))] font-medium mb-2">Readmission Risk</p>
+                  <p className="text-sm text-rose-400">{predictError}</p>
+                </div>
+              )}
+
+              {predictData && tone && (
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 
                 {/* Risk Score */}
                 <div className="bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-xl p-6 relative overflow-hidden">
-                  <div className={`absolute top-0 left-0 w-1 h-full ${predictData.risk_category === 'High Risk' ? 'bg-rose-500' : 'bg-amber-500'}`} />
+                  <div className={`absolute top-0 left-0 w-1 h-full ${tone.bar}`} />
                   <p className="text-sm text-[hsl(var(--muted-foreground))] font-medium mb-2">Readmission Risk</p>
                   <div className="flex items-end gap-3">
                     <span className="text-4xl font-bold">{(predictData.risk_score * 100).toFixed(1)}%</span>
-                    <span className={`text-sm font-medium mb-1 ${predictData.risk_category === 'High Risk' ? 'text-rose-400' : 'text-amber-400'}`}>
+                    <span className={`text-sm font-medium mb-1 ${tone.text}`}>
                       {predictData.risk_category}
                     </span>
                   </div>
+                  <p className="text-xs text-[hsl(var(--muted-foreground))] mt-3">
+                    Estimate for a diabetic discharge, based on historical hospital stays. Not an order.
+                  </p>
                 </div>
 
                 {/* SDoH Extraction */}
                 <div className="bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-xl p-6">
-                  <p className="text-sm text-[hsl(var(--muted-foreground))] font-medium mb-3">SDoH Extracted (ClinicalBERT)</p>
-                  <div className="flex flex-wrap gap-2">
-                    {predictData.sdoh_flags.map((flag, idx) => (
-                      <span key={idx} className="bg-rose-500/10 text-rose-400 border border-rose-500/20 text-xs px-2.5 py-1 rounded-full flex items-center gap-1.5">
-                        <AlertTriangle className="w-3.5 h-3.5" />
-                        {flag}
-                      </span>
-                    ))}
-                  </div>
+                  <p className="text-sm text-[hsl(var(--muted-foreground))] font-medium mb-3">From the discharge note</p>
+                  {noSocialSignals ? (
+                    <p className="text-sm text-[hsl(var(--muted-foreground))]">No SDoH signals detected</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {predictData.sdoh_flags.map((flag, idx) => (
+                        <span key={idx} className="bg-rose-500/10 text-rose-400 border border-rose-500/20 text-xs px-2.5 py-1 rounded-full flex items-center gap-1.5">
+                          <AlertTriangle className="w-3.5 h-3.5" />
+                          {flag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 {/* Financial ROI */}
@@ -455,28 +630,33 @@ export default function Dashboard() {
                       <DollarSign className="w-6 h-6" />
                     </div>
                     <div>
-                      {predictData.cms_penalty_saved_usd ? (
+                      {typeof predictData.cms_penalty_saved_usd === "number" ? (
                         <>
                           <div className="text-2xl font-bold text-emerald-400">${predictData.cms_penalty_saved_usd.toLocaleString()}</div>
                           <div className="text-xs text-[hsl(var(--muted-foreground))]">Est. HRRP savings</div>
                         </>
                       ) : (
-                        <div className="text-sm text-[hsl(var(--muted-foreground))]">N/A (Low Risk)</div>
+                        <div className="text-sm text-[hsl(var(--muted-foreground))]">Estimate appears when risk is high</div>
                       )}
                     </div>
                   </div>
                 </div>
               </div>
+              )}
 
-              {/* Middle Row: RAG & GenAI Plan */}
+              {/* Middle Row: similar stays and checklist */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 
                 {/* Prescriptive Care Plan */}
+                {predictData && (
                 <div className="bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-xl p-6">
                   <h3 className="text-lg font-medium mb-4 flex items-center gap-2">
                     <CheckCircle className="w-5 h-5 text-emerald-400" />
-                    GenAI Copilot Care Plan
+                    Discharge checklist
                   </h3>
+                  {predictData.plan_source === "gemini" && (
+                    <p className="text-xs text-[hsl(var(--muted-foreground))] mb-4">Written by the assistant.</p>
+                  )}
                   <div className="space-y-3">
                     {predictData.care_plan.map((step, idx) => (
                       <div key={idx} className="flex gap-3 bg-[hsl(var(--muted))] p-3 rounded-lg border border-[hsl(var(--border))]">
@@ -487,92 +667,131 @@ export default function Dashboard() {
                       </div>
                     ))}
                   </div>
+                  {predictData.clinical_rationale && (
+                    <p className="text-sm text-[hsl(var(--muted-foreground))] mt-4">{predictData.clinical_rationale}</p>
+                  )}
                 </div>
-
-                {/* Twin-Patient RAG Data */}
-                {ragData && (
-                  <div className="bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-xl p-6 flex flex-col">
-                    <div className="flex justify-between items-start mb-4">
-                      <h3 className="text-lg font-medium flex items-center gap-2">
-                        <Users className="w-5 h-5 text-blue-400" />
-                        Twin-Patient RAG Retrieval
-                      </h3>
-                      <div className="text-right">
-                        <div className="text-xs text-[hsl(var(--muted-foreground))]">Cohort Readmission Rate</div>
-                        <div className="text-lg font-bold text-amber-400">{(ragData.rag_readmission_rate * 100).toFixed(1)}%</div>
-                      </div>
-                    </div>
-                    
-                    <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
-                      {ragData.twins.map(twin => (
-                        <div key={twin.twin_id} className="p-3 bg-[hsl(var(--background))] border border-[hsl(var(--border))] rounded-lg">
-                          <div className="flex justify-between items-center mb-2">
-                            <span className="text-sm font-medium">{twin.twin_id}</span>
-                            <span className="text-xs px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20">
-                              {(twin.similarity_score * 100).toFixed(0)}% Match
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2 text-xs text-[hsl(var(--muted-foreground))] mb-2">
-                            <span className={`px-1.5 py-0.5 rounded ${twin.was_readmitted ? 'bg-rose-500/20 text-rose-300' : 'bg-emerald-500/20 text-emerald-300'}`}>
-                              {twin.was_readmitted ? 'Readmitted' : 'Success'}
-                            </span>
-                            <span>•</span>
-                            <span>Age {twin.age}</span>
-                          </div>
-                          {!twin.was_readmitted && twin.successful_interventions.length > 0 && (
-                            <div className="mt-2 text-xs border-t border-[hsl(var(--border))] pt-2">
-                              <span className="text-[hsl(var(--muted-foreground))] mb-1 block">Successful Interventions:</span>
-                              <ul className="list-disc pl-4 space-y-0.5 text-[hsl(var(--foreground))]">
-                                {twin.successful_interventions.map((inv, i) => (
-                                  <li key={i}>{inv}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
                 )}
-              </div>
 
-              {/* Bottom Row: SHAP Explainability */}
-              <div className="bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-xl p-6">
-                <h3 className="text-lg font-medium mb-4 flex items-center gap-2">
-                  <Activity className="w-5 h-5 text-purple-400" />
-                  XAI Model Explainability (SHAP)
-                </h3>
-                <div className="space-y-4">
-                  {predictData.shap_features.map((feat) => (
-                    <div key={feat.feature} className="flex items-center gap-4">
-                      <div className="w-1/4 text-sm text-[hsl(var(--muted-foreground))] text-right truncate" title={feat.feature}>
-                        {shapLabel(feat.feature)}
-                      </div>
-                      <div className="flex-1 h-3 bg-[hsl(var(--muted))] rounded-full overflow-hidden flex">
-                        {/* Visualization trick: positive impacts push right, negative push left. Simplified for UI. */}
-                        <div className="w-1/2 flex justify-end">
-                          {feat.impact < 0 && <div className="h-full bg-emerald-400" style={{ width: `${Math.abs(feat.impact) * 200}%` }} />}
-                        </div>
-                        <div className="w-1/2 flex justify-start">
-                          {feat.impact > 0 && <div className="h-full bg-rose-400" style={{ width: `${feat.impact * 200}%` }} />}
+                {/* Similar past stays */}
+                <div className="bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-xl p-6 flex flex-col">
+                  {ragData ? (
+                    <>
+                      <div className="flex justify-between items-start mb-4">
+                        <h3 className="text-lg font-medium flex items-center gap-2">
+                          <Users className="w-5 h-5 text-blue-400" />
+                          Similar past stays
+                        </h3>
+                        <div className="text-right">
+                          <div className="text-xs text-[hsl(var(--muted-foreground))]">How often similar patients returned</div>
+                          <div className="text-lg font-bold text-amber-400">{(ragData.rag_readmission_rate * 100).toFixed(1)}%</div>
                         </div>
                       </div>
-                      <div className={`w-16 text-right text-xs font-medium ${feat.impact > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                        {feat.impact > 0 ? '+' : ''}{feat.impact.toFixed(3)}
+                      
+                      <div className="flex-1 overflow-y-auto space-y-3 pr-2">
+                        {ragData.twins.map(twin => (
+                          <div key={twin.twin_id} className="p-3 bg-[hsl(var(--background))] border border-[hsl(var(--border))] rounded-lg">
+                            <div className="flex justify-between items-center mb-2">
+                              <span className="text-sm font-medium">{twin.twin_id}</span>
+                              <span className="text-xs px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                                {(twin.similarity_score * 100).toFixed(0)}% similar
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 text-xs text-[hsl(var(--muted-foreground))] mb-2 flex-wrap">
+                              <span className={`px-1.5 py-0.5 rounded ${twin.was_readmitted ? 'bg-rose-500/20 text-rose-300' : 'bg-emerald-500/20 text-emerald-300'}`}>
+                                {twin.was_readmitted ? "Came back within 30 days" : "Stayed home"}
+                              </span>
+                              <span>•</span>
+                              <span>Age {twin.age}</span>
+                              {twin.diagnosis_group && (
+                                <>
+                                  <span>•</span>
+                                  <span>{twin.diagnosis_group} group</span>
+                                </>
+                              )}
+                            </div>
+                            {!twin.was_readmitted && twin.successful_interventions.length > 0 && (
+                              <div className="mt-2 text-xs border-t border-[hsl(var(--border))] pt-2">
+                                <span className="text-[hsl(var(--muted-foreground))] mb-1 block">What was done for patients who stayed home</span>
+                                <ul className="list-disc pl-4 space-y-0.5 text-[hsl(var(--foreground))]">
+                                  {twin.successful_interventions.map((inv, i) => (
+                                    <li key={i}>{inv}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+                        ))}
                       </div>
-                    </div>
-                  ))}
-                  <div className="flex justify-between text-xs text-[hsl(var(--muted-foreground))] mt-2 px-[25%] border-t border-[hsl(var(--border))] pt-2">
-                    <span>Lowers Risk</span>
-                    <span>Increases Risk</span>
-                  </div>
+                    </>
+                  ) : (
+                    <>
+                      <h3 className="text-lg font-medium flex items-center gap-2 mb-4">
+                        <Users className="w-5 h-5 text-blue-400" />
+                        Similar past stays
+                      </h3>
+                      <p className="text-sm text-rose-400">{ragError}</p>
+                    </>
+                  )}
                 </div>
               </div>
+
+              {/* Bottom Row: why this score */}
+              {predictData && (
+                <div className="bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-xl p-6">
+                  <h3 className="text-lg font-medium mb-4 flex items-center gap-2">
+                    <Activity className="w-5 h-5 text-purple-400" />
+                    Why this score
+                  </h3>
+                  <div className="space-y-4">
+                    {predictData.shap_features.map((feat) => {
+                      const width = maxAbsImpact === 0 ? 0 : (Math.abs(feat.impact) / maxAbsImpact) * 100;
+                      return (
+                        <div key={feat.feature} className="flex items-center gap-4">
+                          <div className="w-1/4 text-sm text-[hsl(var(--muted-foreground))] text-right truncate" title={feat.feature}>
+                            {shapLabel(feat.feature)}
+                          </div>
+                          <div className="flex-1 h-3 bg-[hsl(var(--muted))] rounded-full overflow-hidden flex">
+                            <div className="w-1/2 flex justify-end">
+                              {feat.impact < 0 && width > 0 && (
+                                <div className="h-full bg-emerald-400" style={{ width: `${width}%` }} />
+                              )}
+                            </div>
+                            <div className="w-1/2 flex justify-start">
+                              {feat.impact > 0 && width > 0 && (
+                                <div className="h-full bg-rose-400" style={{ width: `${width}%` }} />
+                              )}
+                            </div>
+                          </div>
+                          <div className={`w-16 text-right text-xs font-medium ${feat.impact > 0 ? "text-rose-400" : "text-emerald-400"}`}>
+                            {feat.impact > 0 ? "+" : ""}{feat.impact.toFixed(3)}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <div className="flex justify-between text-xs text-[hsl(var(--muted-foreground))] mt-2 px-[25%] border-t border-[hsl(var(--border))] pt-2">
+                      <span>Lowers Risk</span>
+                      <span>Increases Risk</span>
+                    </div>
+                  </div>
+                </div>
+              )}
 
             </div>
           )}
         </div>
       </main>
+
+      <footer className="max-w-[1600px] mx-auto mt-10 pt-6 border-t border-[hsl(var(--border))]">
+        <a
+          href="http://localhost:3001"
+          target="_blank"
+          rel="noreferrer"
+          className="text-sm text-[hsl(var(--muted-foreground))] underline"
+        >
+          Operations board
+        </a>
+      </footer>
     </div>
   );
 }

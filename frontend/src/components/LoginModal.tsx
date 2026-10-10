@@ -43,7 +43,7 @@ export function LoginModal() {
             Clinician Portal
           </h2>
           <p className="mb-8 text-sm text-gray-400 text-center">
-            Secure access to AvertCare Predictive Engine
+            Sign in to review a discharge.
           </p>
 
           <form onSubmit={handleLogin} className="w-full space-y-5">
@@ -103,10 +103,6 @@ export function LoginModal() {
             </button>
           </form>
           
-          <div className="mt-6 flex items-center gap-2 text-xs text-gray-500">
-            <Lock className="w-3 h-3" />
-            <span>End-to-End Encrypted HIPAA Gateway</span>
-          </div>
         </div>
       </div>
     </div>
