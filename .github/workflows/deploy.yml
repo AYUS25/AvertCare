@@ -101,21 +101,19 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
+      - name: Require Vercel secrets
+        run: |
+          if [ -z "$VERCEL_TOKEN" ] || [ -z "$VERCEL_ORG_ID" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
+            echo "Set VERCEL_TOKEN, VERCEL_ORG_ID, and VERCEL_PROJECT_ID."
+            exit 1
+          fi
+
+      # The Vercel project root is the frontend directory. Deploy from the repo
+      # root so that setting is applied. CLI 25 cannot read current project settings.
       - name: Deploy to Vercel
-        if: env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != ''
-        uses: amondnet/vercel-action@v25
-        with:
-          vercel-token: ${{ env.VERCEL_TOKEN }}
-          vercel-org-id: ${{ env.VERCEL_ORG_ID }}
-          vercel-project-id: ${{ env.VERCEL_PROJECT_ID }}
-          working-directory: ./frontend
-          vercel-args: "--prod"
-
-      - name: Skip Vercel when secrets are not configured
-        if: env.VERCEL_TOKEN == '' || env.VERCEL_ORG_ID == '' || env.VERCEL_PROJECT_ID == ''
-        run: echo "Vercel secrets are not set, so production deploy was skipped."
+        run: npx --yes vercel@63.1.2 deploy --prod --yes --token "$VERCEL_TOKEN"
 
   deploy-backend:
     name: Deploy Backend (Render)
@@ -127,9 +125,9 @@ jobs:
 
     steps:
       - name: Trigger Render deploy
-        if: env.RENDER_DEPLOY_HOOK_URL != ''
-        run: curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"
-
-      - name: Skip Render when the deploy hook is not configured
-        if: env.RENDER_DEPLOY_HOOK_URL == ''
-        run: echo "RENDER_DEPLOY_HOOK_URL is not set. Redeploy the Render service manually from the latest main commit."
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "Set RENDER_DEPLOY_HOOK_URL."
+            exit 1
+          fi
+          curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"
