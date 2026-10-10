@@ -1,13 +1,10 @@
 """
 AvertCare Backend · Service Layer
-===================================
-Feature-flagged service layer:
-  - LIVE_RAG_ENABLED=false  → deterministic mock (default)
-  - LIVE_RAG_ENABLED=true   → live Qdrant vector search
-  - LIVE_LLM_ENABLED=false  → rule-based care plan (default)
-  - LIVE_LLM_ENABLED=true   → Gemini API prescriptive synthesis
 
-Swap points for M1's models are marked with: # TODO: REAL MODEL
+The discharge score always takes its similar-patient rate from the local
+training index (rag_train_index.npz). Twin search uses Qdrant only when
+collection `clinical_cases` holds that same index. A down or different
+Qdrant collection falls back to the file. The typed note is not the query.
 """
 
 from __future__ import annotations
@@ -32,6 +29,43 @@ from app.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _plain_base_score(raw) -> float:
+    """XGBoost 2.1+ stores base_score as the text '[1.1387802E-1]'. SHAP calls float() on it."""
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1].split(",")[0].strip()
+        return float(text)
+    if isinstance(raw, (list, tuple)):
+        return float(raw[0])
+    return float(raw)
+
+
+def _install_shap_base_score_patch() -> None:
+    """SHAP 0.45 reads the raw model and crashes on XGBoost's list-shaped base_score.
+
+    Rewriting the booster config does not stick: the next save writes the brackets
+    back. The decode step is the one SHAP actually uses, so the number is unwrapped there.
+    """
+    import shap.explainers._tree as tree
+
+    if getattr(tree, "_avertcare_base_score", False):
+        return
+    original = tree.decode_ubjson_buffer
+
+    def decode_ubjson_buffer(fp):
+        model = original(fp)
+        try:
+            params = model["learner"]["learner_model_param"]
+            params["base_score"] = _plain_base_score(params["base_score"])
+        except (KeyError, TypeError, ValueError):
+            return model
+        return model
+
+    tree.decode_ubjson_buffer = decode_ubjson_buffer
+    tree._avertcare_base_score = True
 
 
 # ─────────────────────────────────────────────────────────────
@@ -108,6 +142,29 @@ _DIAG_GROUPS = {
     "Circulatory", "Respiratory", "Digestive", "Genitourinary",
     "Neoplasms", "Musculoskeletal", "Injury", "Diabetes", "Other",
 }
+_ADMISSION_TYPES = {"1", "2", "3", "5", "6", "Other"}
+_ADMISSION_SOURCES = {"1", "2", "4", "5", "6", "7", "17", "Other"}
+_GLUCOSE = {"Not_Tested", "Norm", ">200", ">300"}
+_CHANGES = {"No", "Ch"}
+_MED_STATUS = {"No", "Steady", "Up", "Down"}
+_MEDS = (
+    "metformin", "repaglinide", "glimepiride", "glipizide",
+    "glyburide", "pioglitazone", "rosiglitazone", "insulin",
+)
+_SPECIALTIES = {
+    "Cardiology", "Emergency/Trauma", "Family/GeneralPractice", "InternalMedicine",
+    "Nephrology", "Orthopedics", "Orthopedics-Reconstructive", "Other",
+    "Radiologist", "Surgery-General", "Unknown",
+}
+_PAYERS = {
+    "BC", "CH", "CM", "CP", "DM", "HM", "MC", "MD", "MP", "OG", "OT",
+    "PO", "SI", "SP", "UN", "Unknown", "WC",
+}
+_RACES = {"AfricanAmerican", "Asian", "Caucasian", "Hispanic", "Other", "Unknown"}
+
+
+def _choice(value: str, allowed: set[str], default: str) -> str:
+    return value if value in allowed else default
 
 
 def _model_frame(payload: PatientEncounter) -> pd.DataFrame:
@@ -121,45 +178,47 @@ def _model_frame(payload: PatientEncounter) -> pd.DataFrame:
     if inpatient == 0 and int(payload.num_prior_admissions) > 0:
         inpatient = int(payload.num_prior_admissions)
     emergency = int(payload.number_emergency)
+    outpatient = int(payload.number_outpatient)
     diabetes_med = payload.diabetes_med if payload.diabetes_med in {"Yes", "No"} else "No"
     gender = payload.gender if payload.gender in {"Male", "Female", "Unknown"} else "Unknown"
     disposition = payload.discharge_disposition if payload.discharge_disposition in _DISPOSITIONS else "Other"
     diag_group = payload.diag_1_group if payload.diag_1_group in _DIAG_GROUPS else _diagnosis_group(payload.primary_diagnosis)
+    meds = {name: _choice(getattr(payload, name), _MED_STATUS, "No") for name in _MEDS}
     return pd.DataFrame({
         "age_numeric": [payload.age],
-        "num_lab_procedures": [40],
-        "num_med_changes": [0],
+        "num_lab_procedures": [int(payload.num_lab_procedures)],
+        "num_med_changes": [sum(status in {"Up", "Down"} for status in meds.values())],
         "num_medications": [payload.num_medications],
-        "num_meds_active": [1 if diabetes_med == "Yes" else 0],
-        "num_procedures": [0],
+        "num_meds_active": [sum(status != "No" for status in meds.values())],
+        "num_procedures": [int(payload.num_procedures)],
         "number_diagnoses": [int(payload.number_diagnoses)],
         "number_emergency": [emergency],
         "number_inpatient": [inpatient],
-        "number_outpatient": [0],
+        "number_outpatient": [outpatient],
         "time_in_hospital": [payload.time_in_hospital],
-        "total_prior_visits": [inpatient + emergency],
+        "total_prior_visits": [inpatient + emergency + outpatient],
         "A1Cresult": [_a1c(payload.a1c_result)],
-        "admission_source_id": ["Other"],
-        "admission_type_id": ["Other"],
-        "change": ["No"],
+        "admission_source_id": [_choice(payload.admission_source_id, _ADMISSION_SOURCES, "Other")],
+        "admission_type_id": [_choice(payload.admission_type_id, _ADMISSION_TYPES, "Other")],
+        "change": [_choice(payload.change, _CHANGES, "No")],
         "diabetesMed": [diabetes_med],
         "diag_1_group": [diag_group],
-        "diag_2_group": ["Other"],
-        "diag_3_group": ["Other"],
+        "diag_2_group": [_choice(payload.diag_2_group, _DIAG_GROUPS, "Other")],
+        "diag_3_group": [_choice(payload.diag_3_group, _DIAG_GROUPS, "Other")],
         "discharge_disposition_id": [disposition],
         "gender": [gender],
-        "glimepiride": ["No"],
-        "glipizide": ["No"],
-        "glyburide": ["No"],
-        "insulin": ["No"],
-        "max_glu_serum": ["Not_Tested"],
-        "medical_specialty": ["Unknown"],
-        "metformin": ["No"],
-        "payer_code": ["Unknown"],
-        "pioglitazone": ["No"],
-        "race": ["Unknown"],
-        "repaglinide": ["No"],
-        "rosiglitazone": ["No"],
+        "glimepiride": [meds["glimepiride"]],
+        "glipizide": [meds["glipizide"]],
+        "glyburide": [meds["glyburide"]],
+        "insulin": [meds["insulin"]],
+        "max_glu_serum": [_choice(payload.max_glu_serum, _GLUCOSE, "Not_Tested")],
+        "medical_specialty": [_choice(payload.medical_specialty, _SPECIALTIES, "Unknown")],
+        "metformin": [meds["metformin"]],
+        "payer_code": [_choice(payload.payer_code, _PAYERS, "Unknown")],
+        "pioglitazone": [meds["pioglitazone"]],
+        "race": [_choice(payload.race, _RACES, "Unknown")],
+        "repaglinide": [meds["repaglinide"]],
+        "rosiglitazone": [meds["rosiglitazone"]],
     })
 
 
@@ -318,14 +377,17 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
             cms_penalty_saved_usd=cms_saved,
         )
 
-    # ── LIVE: real RF_RAG model inference ─────────────────────────────────────
+    # ── LIVE: served XGBoost model. The rate comes from the local training index.
     model = artifacts["model"]
     prep = artifacts["preprocessor"]
     meta = artifacts["meta"]
 
-    # 1. Same 34-column row the preprocessor was fit on, then leakage-safe neighbors.
+    # 1. Same 34-column row the preprocessor was fit on, then the training-index neighbors.
+    # The score does not call Qdrant. A different collection would change this rate.
     frame = _model_frame(payload)
-    rag_response = run_rag_retrieval(payload)
+    rag_response = _safe_rag_retrieval(payload, _rag_k(meta))
+    if rag_response is None:
+        rag_response = _mock_rag_retrieval(payload)
     rag_rate = rag_response.rag_readmission_rate
 
     # 2. Transform and append the neighborhood rate when the exported model uses it.
@@ -355,6 +417,7 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
     shap_features: list[SHAPFeature] = []
     try:
         import shap as shap_lib
+        _install_shap_base_score_patch()
         explainer = shap_lib.TreeExplainer(model)
         shap_values = explainer.shap_values(X_input)
         sv = shap_values[1] if isinstance(shap_values, list) else shap_values
@@ -408,18 +471,119 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
 # Twin-Patient RAG Service
 # ─────────────────────────────────────────────────────────────
 
+# One probe per process. A refused connection must not add a timeout to every Analyze click.
+_qdrant_probe: dict = {"done": False, "ready": False, "count": None, "client": None}
+
+
+def _qdrant_matches_index(expected: int) -> bool:
+    """True only when Qdrant holds the same number of training encounters as the npz file."""
+    if _qdrant_probe["done"]:
+        return bool(_qdrant_probe["ready"] and _qdrant_probe["count"] == expected)
+    _qdrant_probe["done"] = True
+    _qdrant_probe["ready"] = False
+    try:
+        from qdrant_client import QdrantClient
+
+        client = QdrantClient(
+            url=settings.QDRANT_URL,
+            api_key=settings.QDRANT_API_KEY or None,
+            timeout=2,
+        )
+        count = int(client.count(collection_name=settings.RAG_COLLECTION, exact=True).count)
+        _qdrant_probe["client"] = client
+        _qdrant_probe["count"] = count
+        _qdrant_probe["ready"] = count == expected
+        if not _qdrant_probe["ready"]:
+            logger.info(
+                "Qdrant collection %s has %s points; the training index has %s. "
+                "Similar-patient search is using the local index.",
+                settings.RAG_COLLECTION,
+                count,
+                expected,
+            )
+        return _qdrant_probe["ready"]
+    except Exception as exc:
+        logger.info(
+            "Qdrant is not available (%s). Similar-patient search is using the local training index.",
+            exc,
+        )
+        return False
+
+
+def _qdrant_safe_retrieval(payload: PatientEncounter, k: int, expected: int) -> TwinPatientResponse | None:
+    """Exact cosine search over the copied training index. None when that copy is absent."""
+    if not _qdrant_matches_index(expected):
+        return None
+    try:
+        from qdrant_client.models import SearchParams
+
+        note = build_discharge_note(_model_frame(payload).iloc[0].to_dict())
+        query = _get_embedding_model().encode(note, normalize_embeddings=True).astype(np.float32)
+        hits = _qdrant_probe["client"].search(
+            collection_name=settings.RAG_COLLECTION,
+            query_vector=query.tolist(),
+            limit=k,
+            with_payload=True,
+            search_params=SearchParams(exact=True),
+        )
+        if not hits:
+            return None
+        labels = [int(hit.payload.get("readmitted_binary", 0)) for hit in hits]
+        rate = round(float(np.mean(labels)), 4)
+        snri = round(min((rate + 0.15) * 0.9, 1.0), 4)
+        twins = []
+        for hit in hits[: settings.RAG_TOP_K]:
+            body = hit.payload or {}
+            interventions = [
+                part.strip()
+                for part in str(body.get("interventions") or "").split("|")
+                if part.strip()
+            ]
+            twins.append(TwinPatient(
+                twin_id=str(int(body["encounter_id"])),
+                age=int(float(body.get("age", 0))),
+                primary_diagnosis=str(body.get("primary_diagnosis", "Unknown")),
+                diagnosis_group=str(body.get("primary_diagnosis", "Unknown")),
+                similarity_score=round(float(min(max(hit.score, 0.0), 1.0)), 4),
+                was_readmitted=bool(int(body.get("readmitted_binary", 0))),
+                successful_interventions=interventions,
+            ))
+        return TwinPatientResponse(
+            patient_id=payload.patient_id,
+            rag_readmission_rate=rate,
+            semantic_neighborhood_risk_index=snri,
+            sdoh_flag=_extract_sdoh_flags(payload.clinical_note)[0],
+            twins=twins,
+        )
+    except Exception as exc:
+        logger.warning("Qdrant search failed (%s). Using the local training index.", exc)
+        return None
+
+
 def run_rag_retrieval(payload: PatientEncounter) -> TwinPatientResponse:
     """
-    Prefer the leakage-safe training index. Fall back to live Qdrant, then
-    to the deterministic mock cohort.
+    Similar-patient search for the screen.
+
+    Qdrant is used only when its collection size equals the local training index.
+    Otherwise the same npz search that feeds the score is used. The mock cohort
+    runs only when that file is missing.
     """
     artifacts = _get_ml_artifacts()
     meta = artifacts["meta"] if artifacts else {}
-    safe = _safe_rag_retrieval(payload, _rag_k(meta))
-    if safe is not None:
-        return safe
+    k = _rag_k(meta)
+    index = _get_safe_rag_index()
+    if index is not None:
+        qdrant_hit = _qdrant_safe_retrieval(payload, k, len(index[1]))
+        if qdrant_hit is not None:
+            return qdrant_hit
+        safe = _safe_rag_retrieval(payload, k)
+        if safe is not None:
+            return safe
     if settings.LIVE_RAG_ENABLED:
-        return _live_rag_retrieval(payload)
+        try:
+            return _live_rag_retrieval(payload)
+        except Exception as exc:
+            logger.warning("Qdrant note search failed (%s). Using the mock cohort.", exc)
     return _mock_rag_retrieval(payload)
 
 
@@ -609,6 +773,23 @@ def _compose_care(
     return steps, PlanSource.RULES, rationale
 
 
+def _gemini_text(response) -> str:
+    """Read the answer text and skip thinking parts such as thought_signature."""
+    chunks: list[str] = []
+    for candidate in getattr(response, "candidates", None) or []:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", None) or []:
+            if getattr(part, "thought", None):
+                continue
+            text = getattr(part, "text", None)
+            if text:
+                chunks.append(text)
+    if chunks:
+        return "".join(chunks).strip()
+    text = getattr(response, "text", None)
+    return (text or "").strip()
+
+
 def _generate_llm_care_plan(
     risk_score: float,
     sdoh_flags: list[str],
@@ -637,7 +818,7 @@ def _generate_llm_care_plan(
             contents=f"{_LLM_SYSTEM_PROMPT}\n\nPatient Data:\n{user_payload}",
         )
 
-        raw = response.text.strip()
+        raw = _gemini_text(response)
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             raw = raw.removeprefix("json")

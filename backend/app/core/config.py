@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-3.8-flash"
 
     # ── Feature flags ────────────────────────────────────────
-    # Flip to True once Qdrant is seeded. Falls back to mock if False.
+    # Used only when the local training index is missing. The score never reads Qdrant.
     LIVE_RAG_ENABLED: bool = False
     # Flip to True once GEMINI_API_KEY is set.
     LIVE_LLM_ENABLED: bool = False

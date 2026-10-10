@@ -1,7 +1,11 @@
 ## ─────────────────────────────────────────────────────────────────────────────
 ## AvertCare · Universal Docker Compose
 ## All 7 services share one bridge network (avertcare-net).
-## Pull develop → docker compose up --build → everything works.
+## Published images (Docker Hub user ayushman25), pinned so everyone runs the same build:
+##   ayushman25/avertcare-backend:2026.10.10
+##   ayushman25/avertcare-frontend:2026.10.10
+## Others: docker compose pull && docker compose up -d
+## Rebuild locally only when publishing a new version: docker compose up --build
 ##
 ## Ports (host → container)
 ##   Frontend   : 3000 → 3000   (Next.js dashboard)
@@ -20,7 +24,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    image: avertcare-backend:latest
+    image: ayushman25/avertcare-backend:2026.10.10
+    pull_policy: missing
     container_name: avertcare-backend
     ports:
       - "8000:8000"
@@ -54,7 +59,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    image: avertcare-frontend:latest
+    image: ayushman25/avertcare-frontend:2026.10.10
+    pull_policy: missing
     container_name: avertcare-frontend
     ports:
       - "3000:3000"

@@ -15,6 +15,8 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 
 // Types matching our Backend Pydantic Schemas
+type MedStatus = "No" | "Steady" | "Up" | "Down";
+
 type PatientEncounter = {
   patient_id: string;
   age: number;
@@ -32,6 +34,26 @@ type PatientEncounter = {
   gender: "Male" | "Female" | "Unknown";
   discharge_disposition: string;
   diag_1_group: string;
+  num_lab_procedures: number;
+  num_procedures: number;
+  number_outpatient: number;
+  admission_type_id: string;
+  admission_source_id: string;
+  change: "No" | "Ch";
+  diag_2_group: string;
+  diag_3_group: string;
+  max_glu_serum: "Not_Tested" | "Norm" | ">200" | ">300";
+  medical_specialty: string;
+  payer_code: string;
+  race: string;
+  metformin: MedStatus;
+  repaglinide: MedStatus;
+  glimepiride: MedStatus;
+  glipizide: MedStatus;
+  glyburide: MedStatus;
+  pioglitazone: MedStatus;
+  rosiglitazone: MedStatus;
+  insulin: MedStatus;
 };
 
 const DIAG_GROUPS = [
@@ -128,6 +150,66 @@ const fieldClass =
 const NOTE_HINT =
   "Check the chart. The note must be at least one short sentence, and the diagnosis must be filled in.";
 
+const MED_STATUSES: MedStatus[] = ["No", "Steady", "Up", "Down"];
+const DRUG_FIELDS: { key: keyof PatientEncounter; label: string }[] = [
+  { key: "insulin", label: "Insulin" },
+  { key: "metformin", label: "Metformin" },
+  { key: "glipizide", label: "Glipizide" },
+  { key: "glyburide", label: "Glyburide" },
+  { key: "glimepiride", label: "Glimepiride" },
+  { key: "pioglitazone", label: "Pioglitazone" },
+  { key: "rosiglitazone", label: "Rosiglitazone" },
+  { key: "repaglinide", label: "Repaglinide" },
+];
+const SPECIALTIES = [
+  "Unknown", "InternalMedicine", "Cardiology", "Emergency/Trauma",
+  "Family/GeneralPractice", "Surgery-General", "Orthopedics",
+  "Orthopedics-Reconstructive", "Nephrology", "Radiologist", "Other",
+];
+const RACES = ["Unknown", "Caucasian", "AfricanAmerican", "Hispanic", "Asian", "Other"];
+const PAYERS = ["Unknown", "MC", "HM", "SP", "BC", "MD", "CP", "UN", "CM", "OG", "PO", "DM", "CH", "WC", "OT", "MP", "SI"];
+const ADMISSION_TYPES = [
+  { value: "1", label: "1 Emergency" },
+  { value: "2", label: "2 Urgent" },
+  { value: "3", label: "3 Elective" },
+  { value: "5", label: "5 Not available" },
+  { value: "6", label: "6 Not mapped" },
+  { value: "Other", label: "Other" },
+];
+const ADMISSION_SOURCES = [
+  { value: "7", label: "7 Emergency room" },
+  { value: "1", label: "1 Physician referral" },
+  { value: "2", label: "2 Clinic referral" },
+  { value: "4", label: "4 Transfer from a hospital" },
+  { value: "5", label: "5 Transfer from a skilled nursing facility" },
+  { value: "6", label: "6 Transfer from another facility" },
+  { value: "17", label: "17 Not available" },
+  { value: "Other", label: "Other" },
+];
+
+const TRAINED_DEFAULTS = {
+  num_lab_procedures: 40,
+  num_procedures: 0,
+  number_outpatient: 0,
+  admission_type_id: "Other",
+  admission_source_id: "Other",
+  change: "No" as const,
+  diag_2_group: "Other",
+  diag_3_group: "Other",
+  max_glu_serum: "Not_Tested" as const,
+  medical_specialty: "Unknown",
+  payer_code: "Unknown",
+  race: "Unknown",
+  metformin: "No" as const,
+  repaglinide: "No" as const,
+  glimepiride: "No" as const,
+  glipizide: "No" as const,
+  glyburide: "No" as const,
+  pioglitazone: "No" as const,
+  rosiglitazone: "No" as const,
+  insulin: "Steady" as const,
+};
+
 const QUIET_DISCHARGE: PatientEncounter = {
   patient_id: "MRN-782910",
   age: 54,
@@ -145,6 +227,7 @@ const QUIET_DISCHARGE: PatientEncounter = {
   gender: "Female",
   discharge_disposition: "1",
   diag_1_group: "Diabetes",
+  ...TRAINED_DEFAULTS,
 };
 
 const SAMPLE_CHART: PatientEncounter = {
@@ -164,6 +247,8 @@ const SAMPLE_CHART: PatientEncounter = {
   gender: "Female",
   discharge_disposition: "1",
   diag_1_group: "Diabetes",
+  ...TRAINED_DEFAULTS,
+  insulin: "Up",
 };
 
 const HIGH_UTIL_DISCHARGE: PatientEncounter = {
@@ -183,6 +268,17 @@ const HIGH_UTIL_DISCHARGE: PatientEncounter = {
   gender: "Male",
   discharge_disposition: "3",
   diag_1_group: "Circulatory",
+  ...TRAINED_DEFAULTS,
+  number_outpatient: 2,
+  num_lab_procedures: 55,
+  num_procedures: 1,
+  admission_type_id: "1",
+  admission_source_id: "7",
+  change: "Ch",
+  diag_2_group: "Diabetes",
+  max_glu_serum: ">200",
+  medical_specialty: "Cardiology",
+  insulin: "Up",
 };
 
 function messageForStatus(status: number): string {
@@ -207,6 +303,7 @@ function clampInt(raw: string, min: number, max: number): number | null {
 export default function Dashboard() {
   const [patient, setPatient] = useState<PatientEncounter>(SAMPLE_CHART);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [reviewStep, setReviewStep] = useState<string | null>(null);
   const [predictData, setPredictData] = useState<PredictResponse | null>(null);
   const [ragData, setRagData] = useState<TwinPatientResponse | null>(null);
   const [predictError, setPredictError] = useState<string | null>(null);
@@ -254,10 +351,15 @@ export default function Dashboard() {
         num_prior_admissions: patient.number_inpatient,
       });
 
-      const [predictResult, ragResult] = await Promise.allSettled([
-        fetch(`${API_URL}/api/predict`, { method: "POST", headers, body }),
+      setReviewStep("Searching similar stays…");
+      const ragResult = await Promise.allSettled([
         fetch(`${API_URL}/api/twin-patients`, { method: "POST", headers, body }),
-      ]);
+      ]).then((results) => results[0]);
+
+      setReviewStep("Scoring this discharge…");
+      const predictResult = await Promise.allSettled([
+        fetch(`${API_URL}/api/predict`, { method: "POST", headers, body }),
+      ]).then((results) => results[0]);
 
       if (predictResult.status === "fulfilled") {
         const res = predictResult.value;
@@ -285,6 +387,7 @@ export default function Dashboard() {
         setRagError("The API is not reachable.");
       }
     } finally {
+      setReviewStep(null);
       setIsAnalyzing(false);
     }
   };
@@ -541,6 +644,89 @@ export default function Dashboard() {
                       ))}
                     </select>
                   </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Second diagnosis group</label>
+                    <select className={`${fieldClass} cursor-pointer`} value={patient.diag_2_group} onChange={(e) => setPatient({ ...patient, diag_2_group: e.target.value })}>
+                      {DIAG_GROUPS.map((group) => <option key={group} value={group}>{group}</option>)}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Third diagnosis group</label>
+                    <select className={`${fieldClass} cursor-pointer`} value={patient.diag_3_group} onChange={(e) => setPatient({ ...patient, diag_3_group: e.target.value })}>
+                      {DIAG_GROUPS.map((group) => <option key={group} value={group}>{group}</option>)}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Outpatient visits</label>
+                    <input type="number" min={0} max={40} className={fieldClass} value={patient.number_outpatient} onChange={(e) => { const number_outpatient = clampInt(e.target.value, 0, 40); if (number_outpatient !== null) setPatient({ ...patient, number_outpatient }); }} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Lab procedures</label>
+                    <input type="number" min={0} max={140} className={fieldClass} value={patient.num_lab_procedures} onChange={(e) => { const num_lab_procedures = clampInt(e.target.value, 0, 140); if (num_lab_procedures !== null) setPatient({ ...patient, num_lab_procedures }); }} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Procedures</label>
+                    <input type="number" min={0} max={10} className={fieldClass} value={patient.num_procedures} onChange={(e) => { const num_procedures = clampInt(e.target.value, 0, 10); if (num_procedures !== null) setPatient({ ...patient, num_procedures }); }} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Glucose serum</label>
+                    <select className={`${fieldClass} cursor-pointer`} value={patient.max_glu_serum} onChange={(e) => setPatient({ ...patient, max_glu_serum: e.target.value as PatientEncounter["max_glu_serum"] })}>
+                      <option value="Not_Tested">Not tested</option>
+                      <option value="Norm">Normal</option>
+                      <option value=">200">&gt;200</option>
+                      <option value=">300">&gt;300</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Admission type</label>
+                    <select className={`${fieldClass} cursor-pointer`} value={patient.admission_type_id} onChange={(e) => setPatient({ ...patient, admission_type_id: e.target.value })}>
+                      {ADMISSION_TYPES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Admission source</label>
+                    <select className={`${fieldClass} cursor-pointer`} value={patient.admission_source_id} onChange={(e) => setPatient({ ...patient, admission_source_id: e.target.value })}>
+                      {ADMISSION_SOURCES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Regimen changed</label>
+                    <select className={`${fieldClass} cursor-pointer`} value={patient.change} onChange={(e) => setPatient({ ...patient, change: e.target.value as PatientEncounter["change"] })}>
+                      <option value="No">No</option>
+                      <option value="Ch">Yes</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Specialty</label>
+                    <select className={`${fieldClass} cursor-pointer`} value={patient.medical_specialty} onChange={(e) => setPatient({ ...patient, medical_specialty: e.target.value })}>
+                      {SPECIALTIES.map((name) => <option key={name} value={name}>{name}</option>)}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Payer code</label>
+                    <select className={`${fieldClass} cursor-pointer`} value={patient.payer_code} onChange={(e) => setPatient({ ...patient, payer_code: e.target.value })}>
+                      {PAYERS.map((code) => <option key={code} value={code}>{code}</option>)}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-[hsl(var(--muted-foreground))]">Race</label>
+                    <select className={`${fieldClass} cursor-pointer`} value={patient.race} onChange={(e) => setPatient({ ...patient, race: e.target.value })}>
+                      {RACES.map((name) => <option key={name} value={name}>{name}</option>)}
+                    </select>
+                  </div>
+                  {DRUG_FIELDS.map((drug) => (
+                    <div key={drug.key} className="space-y-1">
+                      <label className="text-xs text-[hsl(var(--muted-foreground))]">{drug.label}</label>
+                      <select
+                        className={`${fieldClass} cursor-pointer`}
+                        value={patient[drug.key] as MedStatus}
+                        onChange={(e) => setPatient({ ...patient, [drug.key]: e.target.value as MedStatus })}
+                      >
+                        {MED_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
+                      </select>
+                    </div>
+                  ))}
                 </div>
               </div>
 
@@ -564,7 +750,7 @@ export default function Dashboard() {
                 className="w-full mt-4 bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] hover:opacity-90 font-medium py-3 rounded-lg flex items-center justify-center gap-2 transition-all disabled:opacity-50"
               >
                 {isAnalyzing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Activity className="w-5 h-5" />}
-                {isAnalyzing ? "Reviewing chart…" : "Analyze patient"}
+                {isAnalyzing ? (reviewStep ?? "Reviewing chart…") : "Analyze patient"}
               </button>
             </div>
           </div>

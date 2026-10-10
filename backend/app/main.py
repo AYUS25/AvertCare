@@ -8,6 +8,8 @@ Startup order:
   4. Health & root probes
 """
 
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, Histogram
@@ -35,7 +37,20 @@ def _record_request(info) -> None:
     _LATENCY.labels(info.method, info.modified_handler).observe(info.modified_duration)
 
 
+def _configure_inference_logging() -> None:
+    """Show model-step logs in the API process. Uvicorn does not attach the app logger."""
+    log = logging.getLogger("app")
+    log.setLevel(logging.INFO)
+    if not any(getattr(handler, "_avertcare_infer", False) for handler in log.handlers):
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+        handler._avertcare_infer = True  # type: ignore[attr-defined]
+        log.addHandler(handler)
+    log.propagate = False
+
+
 def create_app() -> FastAPI:
+    _configure_inference_logging()
     app = FastAPI(
         title=settings.APP_NAME,
         version=settings.APP_VERSION,

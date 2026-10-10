@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.core.auth import require_auth
 from app.main import create_app
+from app.services import _plain_base_score
 
 
 # ── Auth stub — injected for all tests ──────────────────────────────────────
@@ -104,3 +105,8 @@ class TestTwinPatientEndpoint:
     def test_diagnosis_group_present(self):
         r = client.post("/api/twin-patients", json=SAMPLE_PAYLOAD)
         assert r.json()["twins"][0]["diagnosis_group"]
+
+
+class TestXgbBaseScore:
+    def test_strips_list_wrapping_so_shap_can_parse_it(self):
+        assert _plain_base_score("[1.1387802E-1]") == float("1.1387802E-1")
