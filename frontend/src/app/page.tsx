@@ -124,6 +124,8 @@ type PredictResponse = {
   plan_source?: "gemini" | "rules";
   clinical_rationale?: string;
   cms_penalty_saved_usd?: number | null;
+  relative_risk_ratio?: number | null;
+  risk_percentile?: number | null;
 };
 
 type TwinPatient = {
@@ -309,7 +311,7 @@ export default function Dashboard() {
   const [predictError, setPredictError] = useState<string | null>(null);
   const [ragError, setRagError] = useState<string | null>(null);
 
-  const { token, logout, user } = useAuth();
+  const { logout, user, getFreshToken } = useAuth();
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   const noteTooShort = patient.clinical_note.trim().length < 10;
 
@@ -328,24 +330,14 @@ export default function Dashboard() {
     setPredictError(null);
     setRagError(null);
     try {
-      let authToken = token;
-      if (user) {
-        try {
-          authToken = await user.getIdToken();
-        } catch {
-          const expired = "Sign in again. The login expired.";
-          setPredictData(null);
-          setRagData(null);
-          setPredictError(expired);
-          setRagError(expired);
-          return;
-        }
-      }
+      const authToken = await getFreshToken();
 
-      const headers = {
+      const headers: Record<string, string> = {
         "Content-Type": "application/json",
-        ...(authToken && { Authorization: `Bearer ${authToken}` }),
       };
+      if (authToken) {
+        headers["Authorization"] = `Bearer ${authToken}`;
+      }
       const body = JSON.stringify({
         ...patient,
         num_prior_admissions: patient.number_inpatient,
@@ -786,6 +778,18 @@ export default function Dashboard() {
                       {predictData.risk_category}
                     </span>
                   </div>
+                  {predictData.relative_risk_ratio != null && (
+                    <div className="mt-2.5 flex items-center gap-2 text-xs">
+                      <span className="font-semibold text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded border border-amber-400/20">
+                        {predictData.relative_risk_ratio}x baseline risk
+                      </span>
+                      {predictData.risk_percentile != null && (
+                        <span className="text-[hsl(var(--muted-foreground))]">
+                          ({predictData.risk_percentile}th percentile)
+                        </span>
+                      )}
+                    </div>
+                  )}
                   <p className="text-xs text-[hsl(var(--muted-foreground))] mt-3">
                     Estimate for a diabetic discharge, based on historical hospital stays. Not an order.
                   </p>

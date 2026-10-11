@@ -92,6 +92,8 @@ class PredictResponse(BaseModel):
     plan_source: PlanSource = Field(description="gemini when the assistant wrote the list, otherwise rules")
     clinical_rationale: str = Field(description="One sentence a clinician can read under the checklist")
     cms_penalty_saved_usd: float | None = Field(default=None, description="Estimated CMS penalty avoidance in USD. Null unless risk is high.")
+    relative_risk_ratio: float | None = Field(default=None, description="Ratio of patient risk to population baseline (11.4%)")
+    risk_percentile: int | None = Field(default=None, description="Estimated risk percentile among hospital discharges (0-100)")
 
 
 # ─────────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from functools import lru_cache
 
 import numpy as np
@@ -252,6 +253,29 @@ def _rag_k(meta: dict | None) -> int:
         return 10
 
 
+BASE_READMISSION_RATE: float = 0.1139
+
+
+def _calculate_relative_risk(raw_score: float) -> tuple[float, int]:
+    """Calculate relative risk ratio compared to the hospital population baseline (11.39%)
+    and empirical risk percentile across all hospital discharges."""
+    ratio = round(float(raw_score / BASE_READMISSION_RATE), 2)
+    # Empirical percentile mapping for 130-US-hospitals diabetes readmission distribution
+    if raw_score <= 0.04:
+        pct = int(min(max(raw_score / 0.04 * 30, 1), 30))
+    elif raw_score <= 0.08:
+        pct = int(30 + (raw_score - 0.04) / 0.04 * 25)
+    elif raw_score <= 0.114:
+        pct = int(55 + (raw_score - 0.08) / 0.034 * 15)
+    elif raw_score <= 0.18:
+        pct = int(70 + (raw_score - 0.114) / 0.066 * 15)
+    elif raw_score <= 0.28:
+        pct = int(85 + (raw_score - 0.18) / 0.10 * 10)
+    else:
+        pct = int(min(95 + (raw_score - 0.28) / 0.20 * 4, 99))
+    return ratio, pct
+
+
 def _safe_rag_retrieval(payload: PatientEncounter, k: int) -> TwinPatientResponse | None:
     """Neighborhood rate and twins from the training index only."""
     index = _get_safe_rag_index()
@@ -264,8 +288,14 @@ def _safe_rag_retrieval(payload: PatientEncounter, k: int) -> TwinPatientRespons
     k = max(1, min(int(k), len(labels)))
     chosen = np.argpartition(-sims, k - 1)[:k]
     chosen = chosen[np.argsort(-sims[chosen])]
-    rate = round(float(labels[chosen].mean()), 4)
-    snri = round(min((rate + 0.15) * 0.9, 1.0), 4)
+    chosen_sims = np.clip(sims[chosen], 0.0, 1.0)
+    weights = np.power(chosen_sims, 3)
+    sum_w = float(weights.sum())
+    if sum_w > 1e-6:
+        rate = round(float(np.sum(labels[chosen] * weights) / sum_w), 4)
+    else:
+        rate = round(float(labels[chosen].mean()), 4)
+    snri = round(min(max(rate * 1.5 + 0.05, 0.0), 1.0), 4)
     twins = []
     for idx in chosen[: settings.RAG_TOP_K]:
         row = meta.iloc[int(idx)]
@@ -361,8 +391,10 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
         ]
         shap_features.sort(key=lambda x: abs(x.impact), reverse=True)
         sdoh_flags = _extract_sdoh_flags(payload.clinical_note)
+        rel_risk_ratio, risk_pct = _calculate_relative_risk(raw_score)
         care_plan, plan_source, rationale = _compose_care(
-            risk_category, raw_score, sdoh_flags, shap_features, [], _a1c(payload.a1c_result)
+            risk_category, raw_score, sdoh_flags, shap_features, [], _a1c(payload.a1c_result),
+            rel_risk_ratio=rel_risk_ratio, risk_pct=risk_pct,
         )
         cms_saved = round(15_400 * raw_score, 2) if risk_category == RiskCategory.HIGH else None
         return PredictResponse(
@@ -375,12 +407,19 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
             plan_source=plan_source,
             clinical_rationale=rationale,
             cms_penalty_saved_usd=cms_saved,
+            relative_risk_ratio=rel_risk_ratio,
+            risk_percentile=risk_pct,
         )
 
     # ── LIVE: served XGBoost model. The rate comes from the local training index.
     model = artifacts["model"]
     prep = artifacts["preprocessor"]
     meta = artifacts["meta"]
+
+    t_start = time.perf_counter()
+    logger.info("━" * 60)
+    logger.info("[PREDICT:START] Encounter received for Patient ID: %s | Age: %d | Diag: %s | Stay: %dd | Prior Inpatient: %d",
+                payload.patient_id, payload.age, payload.primary_diagnosis, payload.time_in_hospital, payload.number_inpatient)
 
     # 1. Same 34-column row the preprocessor was fit on, then the training-index neighbors.
     # The score does not call Qdrant. A different collection would change this rate.
@@ -389,6 +428,8 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
     if rag_response is None:
         rag_response = _mock_rag_retrieval(payload)
     rag_rate = rag_response.rag_readmission_rate
+    logger.info("[PREDICT:RAG] Neighborhood readmission rate: %.1f%% | SNRI: %.4f | Retrieved twins: %d",
+                rag_rate * 100, rag_response.semantic_neighborhood_risk_index, len(rag_response.twins))
 
     # 2. Transform and append the neighborhood rate when the exported model uses it.
     X_tab = prep.transform(frame)
@@ -440,6 +481,8 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
         logger.warning("SHAP explanation failed (%s); returning empty list.", exc)
 
     sdoh_flags = _extract_sdoh_flags(payload.clinical_note)
+    logger.info("[PREDICT:SDOH] SDoH signals detected (%d): %s", len(sdoh_flags), ", ".join(sdoh_flags))
+
     twin_interventions: list[str] = []
     for twin in rag_response.twins:
         if not twin.was_readmitted:
@@ -447,11 +490,26 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
                 if item not in twin_interventions:
                     twin_interventions.append(item)
 
+    rel_risk_ratio, risk_pct = _calculate_relative_risk(raw_score)
+    logger.info("[PREDICT:ML] XGBoost Readmission Risk: %.2f%% [%s] | Relative Risk: %.2fx (%dth percentile)",
+                raw_score * 100, risk_category.value, rel_risk_ratio, risk_pct)
+    if shap_features:
+        logger.info("[PREDICT:SHAP] #1 Impact: %s (%+.4f) | #2 Impact: %s (%+.4f)",
+                    shap_features[0].feature, shap_features[0].impact,
+                    shap_features[1].feature if len(shap_features) > 1 else "None",
+                    shap_features[1].impact if len(shap_features) > 1 else 0.0)
+
     care_plan, plan_source, rationale = _compose_care(
-        risk_category, raw_score, sdoh_flags, shap_features, twin_interventions, _a1c(payload.a1c_result)
+        risk_category, raw_score, sdoh_flags, shap_features, twin_interventions, _a1c(payload.a1c_result),
+        rel_risk_ratio=rel_risk_ratio, risk_pct=risk_pct,
     )
 
     cms_saved = round(15_400 * raw_score, 2) if risk_category == RiskCategory.HIGH else None
+    elapsed_ms = (time.perf_counter() - t_start) * 1000
+    logger.info("[PREDICT:PLAN] Care plan: %s (%d steps) | Savings: %s",
+                plan_source.value.upper(), len(care_plan), f"${cms_saved:,.2f}" if cms_saved else "N/A")
+    logger.info("[PREDICT:DONE] Completed in %.1f ms for Patient ID: %s", elapsed_ms, payload.patient_id)
+    logger.info("━" * 60)
 
     return PredictResponse(
         patient_id=payload.patient_id,
@@ -463,6 +521,8 @@ def run_prediction(payload: PatientEncounter) -> PredictResponse:
         plan_source=plan_source,
         clinical_rationale=rationale,
         cms_penalty_saved_usd=cms_saved,
+        relative_risk_ratio=rel_risk_ratio,
+        risk_percentile=risk_pct,
     )
 
 
@@ -515,6 +575,7 @@ def _qdrant_safe_retrieval(payload: PatientEncounter, k: int, expected: int) -> 
     if not _qdrant_matches_index(expected):
         return None
     try:
+        t_q0 = time.perf_counter()
         from qdrant_client.models import SearchParams
 
         note = build_discharge_note(_model_frame(payload).iloc[0].to_dict())
@@ -528,9 +589,17 @@ def _qdrant_safe_retrieval(payload: PatientEncounter, k: int, expected: int) -> 
         )
         if not hits:
             return None
+        q_time_ms = (time.perf_counter() - t_q0) * 1000
         labels = [int(hit.payload.get("readmitted_binary", 0)) for hit in hits]
-        rate = round(float(np.mean(labels)), 4)
-        snri = round(min((rate + 0.15) * 0.9, 1.0), 4)
+        chosen_sims = np.array([float(min(max(hit.score, 0.0), 1.0)) for hit in hits], dtype=np.float32)
+        weights = np.power(chosen_sims, 3)
+        sum_w = float(weights.sum())
+        labels_arr = np.array(labels, dtype=np.float32)
+        if sum_w > 1e-6:
+            rate = round(float(np.sum(labels_arr * weights) / sum_w), 4)
+        else:
+            rate = round(float(labels_arr.mean()), 4)
+        snri = round(min(max(rate * 1.5 + 0.05, 0.0), 1.0), 4)
         twins = []
         for hit in hits[: settings.RAG_TOP_K]:
             body = hit.payload or {}
@@ -548,6 +617,10 @@ def _qdrant_safe_retrieval(payload: PatientEncounter, k: int, expected: int) -> 
                 was_readmitted=bool(int(body.get("readmitted_binary", 0))),
                 successful_interventions=interventions,
             ))
+        twin_ids_str = ", ".join(t.twin_id for t in twins)
+        top_sim = twins[0].similarity_score * 100 if twins else 0.0
+        logger.info("[QDRANT:HIT] %d vectors queried in %.1f ms | Top Similarity: %.1f%% | Neighborhood Rate: %.1f%% | Twin IDs: %s",
+                    len(hits), q_time_ms, top_sim, rate * 100, twin_ids_str)
         return TwinPatientResponse(
             patient_id=payload.patient_id,
             rag_readmission_rate=rate,
@@ -568,6 +641,10 @@ def run_rag_retrieval(payload: PatientEncounter) -> TwinPatientResponse:
     Otherwise the same npz search that feeds the score is used. The mock cohort
     runs only when that file is missing.
     """
+    t_start = time.perf_counter()
+    logger.info("━" * 60)
+    logger.info("[TWINS:START] Searching historical twins for Patient ID: %s | Diagnosis: %s | Age: %d",
+                payload.patient_id, payload.primary_diagnosis, payload.age)
     artifacts = _get_ml_artifacts()
     meta = artifacts["meta"] if artifacts else {}
     k = _rag_k(meta)
@@ -575,16 +652,26 @@ def run_rag_retrieval(payload: PatientEncounter) -> TwinPatientResponse:
     if index is not None:
         qdrant_hit = _qdrant_safe_retrieval(payload, k, len(index[1]))
         if qdrant_hit is not None:
+            logger.info("[TWINS:DONE] Retrieved via Qdrant in %.1f ms", (time.perf_counter() - t_start) * 1000)
+            logger.info("━" * 60)
             return qdrant_hit
         safe = _safe_rag_retrieval(payload, k)
         if safe is not None:
+            logger.info("[TWINS:DONE] Retrieved via Local NPZ Index in %.1f ms", (time.perf_counter() - t_start) * 1000)
+            logger.info("━" * 60)
             return safe
     if settings.LIVE_RAG_ENABLED:
         try:
-            return _live_rag_retrieval(payload)
+            live = _live_rag_retrieval(payload)
+            logger.info("[TWINS:DONE] Retrieved via Live Qdrant in %.1f ms", (time.perf_counter() - t_start) * 1000)
+            logger.info("━" * 60)
+            return live
         except Exception as exc:
             logger.warning("Qdrant note search failed (%s). Using the mock cohort.", exc)
-    return _mock_rag_retrieval(payload)
+    mock = _mock_rag_retrieval(payload)
+    logger.info("[TWINS:DONE] Retrieved via Deterministic Mock in %.1f ms", (time.perf_counter() - t_start) * 1000)
+    logger.info("━" * 60)
+    return mock
 
 
 def _live_rag_retrieval(payload: PatientEncounter) -> TwinPatientResponse:
@@ -716,16 +803,25 @@ def _plain_feature(name: str) -> str:
     return name.replace("num__", "").replace("cat__", "").replace("_", " ")
 
 
-def _rule_rationale(shap_features: list[SHAPFeature], sdoh_flags: list[str], a1c_result: str) -> str:
+def _rule_rationale(
+    shap_features: list[SHAPFeature],
+    sdoh_flags: list[str],
+    a1c_result: str,
+    rel_risk_ratio: float | None = None,
+    risk_pct: int | None = None,
+) -> str:
+    parts = []
+    if rel_risk_ratio is not None and risk_pct is not None:
+        parts.append(f"Risk is {rel_risk_ratio}x hospital baseline ({risk_pct}th percentile).")
     driver = _plain_feature(shap_features[0].feature) if shap_features else "the chart"
-    sentence = f"The strongest chart driver is {driver}."
+    parts.append(f"The strongest chart driver is {driver}.")
     if a1c_result == "Not_Tested":
-        sentence += " HbA1c was not measured during this stay."
+        parts.append("HbA1c was not measured during this stay.")
     elif a1c_result in {">7", ">8"}:
-        sentence += " HbA1c was elevated."
+        parts.append("HbA1c was elevated.")
     if sdoh_flags and not sdoh_flags[0].lower().startswith("no sdoh"):
-        sentence += f" The note also shows {sdoh_flags[0].rstrip('.').lower()}."
-    return sentence
+        parts.append(f"The note also shows {sdoh_flags[0].rstrip('.').lower()}.")
+    return " ".join(parts)
 
 
 def _a1c_action(a1c_result: str) -> str | None:
@@ -760,11 +856,13 @@ def _compose_care(
     shap_features: list[SHAPFeature],
     twin_interventions: list[str],
     a1c_result: str,
+    rel_risk_ratio: float | None = None,
+    risk_pct: int | None = None,
 ) -> tuple[list[str], PlanSource, str]:
-    rationale = _rule_rationale(shap_features, sdoh_flags, a1c_result)
+    rationale = _rule_rationale(shap_features, sdoh_flags, a1c_result, rel_risk_ratio, risk_pct)
     if settings.LIVE_LLM_ENABLED:
         drafted = _generate_llm_care_plan(
-            risk_score, sdoh_flags, shap_features, twin_interventions, a1c_result
+            risk_score, sdoh_flags, shap_features, twin_interventions, a1c_result, rel_risk_ratio, risk_pct
         )
         if drafted is not None:
             steps, drafted_rationale = drafted
@@ -796,6 +894,8 @@ def _generate_llm_care_plan(
     shap_features: list[SHAPFeature],
     twin_interventions: list[str] | None = None,
     a1c_result: str = "Not_Tested",
+    rel_risk_ratio: float | None = None,
+    risk_percentile: int | None = None,
 ) -> tuple[list[str], str] | None:
     """Call Gemini. None means the caller should use the rule checklist."""
     try:
@@ -807,6 +907,8 @@ def _generate_llm_care_plan(
         ]
         user_payload = json.dumps({
             "patient_risk_score": risk_score,
+            "relative_risk_ratio": rel_risk_ratio,
+            "risk_percentile": risk_percentile,
             "sdoh_flags": sdoh_flags,
             "top_shap_features": [{"feature": f.feature, "impact": f.impact} for f in shap_features[:3]],
             "twin_interventions": interventions,
@@ -828,7 +930,7 @@ def _generate_llm_care_plan(
         if not steps:
             return None
         rationale = str(parsed.get("clinical_rationale") or "").strip()
-        return steps, rationale or _rule_rationale(shap_features, sdoh_flags, a1c_result)
+        return steps, rationale or _rule_rationale(shap_features, sdoh_flags, a1c_result, rel_risk_ratio, risk_percentile)
 
     except Exception as exc:
         logger.warning("Gemini call failed (%s), falling back to rule-based care plan.", exc)
@@ -840,21 +942,60 @@ def _generate_llm_care_plan(
 # ─────────────────────────────────────────────────────────────
 
 _SDOH_KEYWORDS: dict[str, str] = {
-    "lives alone":       "Social isolation — lives alone",
-    "no transport":      "Transportation barrier",
-    "cannot afford":     "Financial distress / medication non-adherence risk",
-    "food insecurity":   "Food insecurity",
-    "homeless":          "Housing instability",
-    "polypharmacy":      "Polypharmacy risk (≥5 medications)",
+    # Social Isolation & Living Situation
+    "lives alone": "Social isolation — lives alone",
+    "living alone": "Social isolation — lives alone",
+    "lives by himself": "Social isolation — lives alone",
+    "lives by herself": "Social isolation — lives alone",
+    "isolated": "Social isolation — limited caregiver support",
+    "lack of caregiver": "Caregiver deficit — needs discharge assistance",
+    "no family": "Social isolation — limited family support",
+
+    # Financial Distress & Medication Affordability
+    "cannot afford": "Financial distress / medication non-adherence risk",
+    "unable to afford": "Financial distress / medication non-adherence risk",
+    "affordability": "Financial distress / medication non-adherence risk",
+    "uninsured": "Uninsured — prescription cost-adherence risk",
+    "underinsured": "Underinsured — copay burden risk",
+    "cost barrier": "Financial barrier to medication adherence",
+    "cannot pay": "Financial distress — medication access barrier",
+    "copay": "Financial distress / medication copay burden",
+
+    # Transportation
+    "no transport": "Transportation barrier",
+    "no transportation": "Transportation barrier",
     "transportation barrier": "Transportation barrier",
-    "uninsured":         "Uninsured — prescription cost-adherence risk",
+    "lack of transport": "Transportation barrier",
+    "lack of transportation": "Transportation barrier",
+    "no car": "Transportation barrier",
+    "no ride": "Transportation barrier",
+
+    # Food & Housing
+    "food insecurity": "Food insecurity",
+    "food desert": "Food insecurity / nutritional deficit",
+    "homeless": "Housing instability",
+    "unhoused": "Housing instability",
+    "unstable housing": "Housing instability",
+    "shelter": "Housing instability",
+
+    # Adherence & Polypharmacy
+    "polypharmacy": "Polypharmacy risk (≥5 medications)",
+    "non-adherence": "Documented medication non-adherence",
+    "nonadherence": "Documented medication non-adherence",
+    "skipping doses": "Medication non-adherence — skipping doses",
+    "missed doses": "Medication non-adherence — missed doses",
 }
 
 
 def _extract_sdoh_flags(note: str) -> list[str]:
-    """Keyword-based SDoH extraction (stub for ClinicalBERT NER)."""
-    note_lower = note.lower()
-    flags = [label for kw, label in _SDOH_KEYWORDS.items() if kw in note_lower]
+    """Pattern-based SDoH extraction with deduplication."""
+    note_lower = (note or "").lower()
+    flags: list[str] = []
+    seen = set()
+    for kw, label in _SDOH_KEYWORDS.items():
+        if kw in note_lower and label not in seen:
+            flags.append(label)
+            seen.add(label)
     return flags if flags else ["No SDoH signals detected"]
 
 

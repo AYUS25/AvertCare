@@ -37,16 +37,32 @@ def _record_request(info) -> None:
     _LATENCY.labels(info.method, info.modified_handler).observe(info.modified_duration)
 
 
+import sys
+
+
 def _configure_inference_logging() -> None:
-    """Show model-step logs in the API process. Uvicorn does not attach the app logger."""
+    """Show model-step logs in the API process and suppress routine health probe spam."""
     log = logging.getLogger("app")
     log.setLevel(logging.INFO)
-    if not any(getattr(handler, "_avertcare_infer", False) for handler in log.handlers):
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
-        handler._avertcare_infer = True  # type: ignore[attr-defined]
-        log.addHandler(handler)
+    
+    # Direct stdout handler so logs stream immediately to Docker and Dozzle
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-7s | %(name)s | %(message)s", "%Y-%m-%d %H:%M:%S"))
+    handler._avertcare_infer = True  # type: ignore[attr-defined]
+    
+    log.handlers = [h for h in log.handlers if not getattr(h, "_avertcare_infer", False)]
+    log.addHandler(handler)
     log.propagate = False
+
+    # Suppress routine health checks and metrics scrapes from polluting Dozzle logs
+    class HealthAndMetricsFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            msg = record.getMessage()
+            return "GET /health" not in msg and "GET /metrics" not in msg
+
+    access_log = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, HealthAndMetricsFilter) for f in access_log.filters):
+        access_log.addFilter(HealthAndMetricsFilter())
 
 
 def create_app() -> FastAPI:

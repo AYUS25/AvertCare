@@ -44,6 +44,7 @@ services:
       # Models are mounted read-only from the committed backend/models directory.
       # Every developer gets the same trained artifacts after git pull.
       - ./backend/models:/app/models:ro
+      - ./backend/app:/app/app:ro
     networks:
       - avertcare-net
     restart: unless-stopped
@@ -64,6 +65,8 @@ services:
     container_name: avertcare-frontend
     ports:
       - "3000:3000"
+    env_file:
+      - ./frontend/.env.local
     environment:
       # The API is accessed from the *browser*, so it must use localhost, not
       # the Docker service name. This is correct for local dev.
